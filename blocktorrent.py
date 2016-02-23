@@ -75,8 +75,8 @@ class TreeState:
         structure that stores information about what parts of a merkle
         tree a peer has or does not have. The structure is itself a binary
         tree implemented as nested lists, where a node is a list
-        with one or two elements: Either [int nodestate], or 
-        [int nodestate, [list child1, list child2]]. Whether the node has 
+        with one or two elements: Either [int nodestate], or
+        [int nodestate, [list child1, list child2]]. Whether the node has
         children can be inferred from the value of nodestate.
 
         nodestate can have one of four values:
@@ -84,15 +84,15 @@ class TreeState:
         0 (MISSING): The peer does not have any information about the corresponding
         node in the merkle tree or its decendants. This node will be a leaf
         in the TreeState structure, but not necessarily a leaf in the actual
-        merkle tree. 
+        merkle tree.
 
         1 (HASH): The peer has the hash for the corresponding merkle node. The peer
         may or may not have any children.
 
         2 (ALLHASH): The peer has the hash for the corresponding merkle node, and
         the hashes for all decendants of this node, up to the transaction
-        hashes themselves. The peer is not known to have the actual 
-        transactions. 
+        hashes themselves. The peer is not known to have the actual
+        transactions.
 
         3 (ALLTX): The peer has the hash for this node and all decendants, and has
         the transactions themselves for all decendants.
@@ -127,18 +127,18 @@ class TreeState:
             s = s[1][(i>>L)%2] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
         raise
-    
+  
     def setnode(self, level, index, value):
         assert index < 2**level
         assert level >= 0
         assert level <= config.MAX_DEPTH
-        assert value in (0,1,2,3) 
+        assert value in (0,1,2,3)
 
         if value == 0:
             raise NotImplementedError # deleting nodes is not supported
 
         # Algorithm: we walk down the tree until we get to the target,
-        # creating nodes as needed to get to the target, then we walk back 
+        # creating nodes as needed to get to the target, then we walk back
         # up and clear any nodes that were made redundant by the changes we just made
         # "Down" means away from the root (towards the children)
 
@@ -155,11 +155,11 @@ class TreeState:
             elif v == value and v != 1:
                 break
             elif v in (0, 2, 3) and v != value:
-                # this node has no children. Let's add them, being careful to mutate 
+                # this node has no children. Let's add them, being careful to mutate
                 # the list instead of replacing it in order to ensure that we're modifying
                 # the actual tree and not a copied subtree
                 assert len(s) == 1
-                s[0] = 1 
+                s[0] = 1
                 s.append([[v],[v]]) # accidental code emoji
                 
             ancestors.append(s)
@@ -176,8 +176,8 @@ class TreeState:
             if value == 1:
                 assert len(s) == 1
                 assert s[0] <= value
-                s[0] = 1 
-                s.append([[0],[0]]) 
+                s[0] = 1
+                s.append([[0],[0]])
 
             else: # value == 2 or 3
                 del s[:]
@@ -195,10 +195,9 @@ class TreeState:
         print self.flattened() # debug, fixme
         return
 
-
     def flattened(self):
         def flatten(sub, levs, i, pos):
-            if len(levs) <= i: 
+            if len(levs) <= i:
                 levs.append([9]*2**i)
             levs[i][pos] = sub[0]
             if sub[0] in (0, 2, 3):
@@ -223,7 +222,9 @@ class BTPeer:
         if not hostname: hostname = str(addr[0])
         self.hostname = hostname
         self.host = hostname + ":" + str(addr[1])
-        #self.headerinv = 
+        self.headerinv = {}
+        self.blockinv = set()
+        #self.txinv = set() # we'll probably want to do this in a more efficient fashion than a set
 
 
 class BTUDPClient(threading.Thread):
@@ -231,27 +232,27 @@ class BTUDPClient(threading.Thread):
         threading.Thread.__init__(self)
         self.udp_listen = udp_listen
         self.state = "idle"
-        self.peers = []
+        self.peers = {}
         self.e_stop = threading.Event()
 
     def addnode(self, addr):
-        addr = (socket.gethostbyname(addr[0]), addr[1])
-        if not addr in self.peers:
-            self.peers.append(addr)
-            self.socket.sendto(MSG_CONNECT, addr)
-            debuglog('btnet', "Adding peer %s" % (':'.join(map(str, addr))))
+        newaddr = (socket.gethostbyname(addr[0]), addr[1])
+        if not newaddr in self.peers:
+            peer = BTPeer(newaddr, addr[0])
+            self.peers[newaddr] = peer
+            self.socket.sendto(MSG_CONNECT, newaddr)
+            debuglog('btnet', "Adding peer %s" % peer.host)
         else:
-            debuglog('btnet', "Peer %s already exists" % (':'.join(map(str, addr))))
+            debuglog('btnet', "Peer %s:%i already exists" % addr)
 
     def remnode(self, addr):
-        addr = (socket.gethostbyname(addr[0]), addr[1])
-        if addr in self.peers:
-            self.peers.remove(addr)
-            self.socket.sendto(MSG_DISCONNECT, addr)
-            debuglog('btnet', "Removing peer %s" % (':'.join(map(str, addr))))
+        newaddr = (socket.gethostbyname(addr[0]), addr[1])
+        if newaddr in self.peers:
+            debuglog('btnet', "Removing peer %s" % (self.peers[newaddr].host))
+            del self.peers[newaddr]
+            self.socket.sendto(MSG_DISCONNECT, newaddr)
         else:
-            debuglog('btnet', "Peer %s doesn't exist" % (':'.join(map(str, addr))))
-
+            debuglog('btnet', "Peer %s:%i doesn't exist" % addr)
 
     def stop(self):
         self.e_stop.set()
@@ -298,17 +299,13 @@ class BTUDPClient(threading.Thread):
                     traceback.print_exc()
 
     def handle_close(self):
-        debuglog('btnet', "handle_close called")
-            
         for peer in self.peers:
-            # fixme: this needs to be done with TCP to avoid spoofing an IP 
+            # fixme: this needs to be done with TCP to avoid spoofing an IP
             # and interrupting someone else's BT connections
             self.socket.sendto(MSG_DISCONNECT, peer)
-
         if self.state != "closed":
             debuglog('btnet', "close")
             self.state = "closed"
-
             try:
                 self.socket.shutdown(socket.SHUT_RDWR)
                 self.socket.close()
@@ -337,5 +334,5 @@ class BTUDPClient(threading.Thread):
         blk = halfnode.CBlock()
         f = StringIO.StringIO(data.split(MSG_HEADER)[1])
         blk.deserialize_header(f)
-        debuglog('btcnet', "Received header from %s: %s" % (':'.join(map(str, addr)), repr(blk)))
-        print  "Received header from %s: %s" % (':'.join(map(str, addr)), repr(blk)) 
+        debuglog('btcnet', "Received header from %s: %s" % (self.peers[addr].host, repr(blk)))
+        print  "Received header from %s: %s" % (self.peers[addr].host, repr(blk))

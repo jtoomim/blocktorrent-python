@@ -5,7 +5,7 @@
 
 # This file was copied from Slush's stratum-mining project
 # with some minor modifications by jtoomim (mostly for header
-# serialization). Nearly everything here is duplicated by 
+# serialization). Nearly everything here is duplicated by
 # bitcoinnode.py. Todo: remove this file and use bitcoinnode.py
 # exclusively.
 
