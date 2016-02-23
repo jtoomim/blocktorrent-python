@@ -104,7 +104,12 @@ class TreeState:
 
     def getnode(self, level, index):
         """
-        level 0 is the merkle root hash
+        Gets the state of a node of the tree specified by its level and index.
+        If the specified node does not exist in this tree but is described
+        by one of its ancestors as MISSING, ALLHASH, or ALLTX, then this method
+        will return the state specified by that ancestor.
+
+        level == 0 is the merkle root hash.
         
         index is the position in the corresponding level, and is coincidentally
         also the path that needs to be followed from the root to arrive at the
@@ -122,20 +127,27 @@ class TreeState:
         s = self.state # the subtree
         while 1:
             if s[0] in [0, 2, 3] or L==0: # if this node speaks for its decendants or is the target
-                return s[0] 
+                return s[0]
             L -= 1
             s = s[1][(i>>L)%2] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
         raise
   
     def setnode(self, level, index, value):
+        """
+        Sets the state of a node of the tree, specified by its level, index, and
+        new value. Creates and destroys nodes as needed to ensure that the TreeState
+        node population rules are preserved. For example, setting an internal node to
+        a value of 2 will remove all its decendants from the tree (even if they have
+        a value of 3 -- careful!).
+        """
         assert index < 2**level
         assert level >= 0
         assert level <= config.MAX_DEPTH
         assert value in (0,1,2,3)
 
         if value == 0:
-            raise NotImplementedError # deleting nodes is not supported
+            raise NotImplementedError # clearing inventory is not supported
 
         # Algorithm: we walk down the tree until we get to the target,
         # creating nodes as needed to get to the target, then we walk back
@@ -222,9 +234,21 @@ class BTPeer:
         if not hostname: hostname = str(addr[0])
         self.hostname = hostname
         self.host = hostname + ":" + str(addr[1])
-        self.headerinv = {}
-        self.blockinv = set()
+        self.addr = addr
+        self.headers = {}
+        self.blocks = set()
         #self.txinv = set() # we'll probably want to do this in a more efficient fashion than a set
+    def has_header(self, sha256):
+        if not type(sha256) == long:
+            print type(sha256)
+        assert type(sha256) == long
+        if sha256 in self.headers:
+            return 'header'
+        elif sha256 in self.blocks:
+            return 'block'
+    def log_header(self, sha256):
+        if not self.has_header(sha256):
+            self.headers[sha256] = BlockState(sha256)
 
 
 class BTUDPClient(threading.Thread):
@@ -233,6 +257,9 @@ class BTUDPClient(threading.Thread):
         self.udp_listen = udp_listen
         self.state = "idle"
         self.peers = {}
+        self.blocks = {}
+        self.blockstates = {}
+        self.merkles = {}
         self.e_stop = threading.Event()
 
     def addnode(self, addr):
@@ -325,7 +352,15 @@ class BTUDPClient(threading.Thread):
         if t.startswith(MSG_HEADER):
             self.recv_header(t, addr)
 
+    def add_header(self, cblock):
+        if not cblock.sha256 in self.blocks:
+            self.blocks[cblock.sha256] = cblock
+            self.blockstates[cblock.sha256] = BlockState(cblock.sha256)
+            #self.merkles[cblock.sha256] = ...
+
     def send_header(self, cblock, addr):
+        self.peers[addr].log_header(cblock.sha256)
+        self.add_header(cblock)
         header = cblock.serialize_header()
         msg = MSG_HEADER + header
         self.socket.sendto(msg, addr)
@@ -334,5 +369,18 @@ class BTUDPClient(threading.Thread):
         blk = halfnode.CBlock()
         f = StringIO.StringIO(data.split(MSG_HEADER)[1])
         blk.deserialize_header(f)
-        debuglog('btcnet', "Received header from %s: %s" % (self.peers[addr].host, repr(blk)))
-        print  "Received header from %s: %s" % (self.peers[addr].host, repr(blk))
+        blk.calc_sha256()
+        self.add_header(blk)
+        peer = self.peers[addr]
+        if not peer.has_header(blk.sha256):
+            debuglog('btcnet', "Received header from %s: %s" % (self.peers[addr].host, repr(blk)))
+        else:
+            debuglog('btcnet', "Received duplicate header from %s: %i" % (self.peers[addr].host, hex(blk.sha256)[2:]))
+        peer.log_header(blk.sha256)
+        self.broadcast_header(blk)
+
+    def broadcast_header(self, cblock):
+        sha = cblock.sha256
+        for peer in self.peers.values():
+            if not peer.has_header(sha):
+                self.send_header(cblock, peer.addr)

@@ -12,7 +12,7 @@ def init_nodes(num_nodes):
         n = blocktorrent.BTUDPClient(ports[i])
         nodes.append(n)
         n.start()
-        time.sleep(0.1)
+        time.sleep(0.05)
         if not i==0:
             n.addnode(('localhost', ports[i-1]))
     return nodes, ports
@@ -41,9 +41,9 @@ def main():
 
     time.sleep(1)
 
-    try:    
+    try:
         close_nodes(nodes)
-    except: 
+    except:
         traceback.print_exc()
 
 
