@@ -13,13 +13,15 @@ import sys
 import binascii
 import StringIO
 import math
-from lib import authproxy, halfnode, merkletree
+from lib import authproxy, halfnode, merkletree, util
+from lib.util import ser_varint, deser_varint
 
 logs.debuglevels.extend(['btnet', 'bttree'])
 
 MSG_DISCONNECT = 'kthxbai'
 MSG_CONNECT = 'ohai'
 MSG_HEADER = 'heads up!'
+MSG_MULTIPLE = 'multipass'
 
 rpcusername = config.RPCUSERNAME
 rpcpassword = config.RPCPASSWORD
@@ -226,7 +228,7 @@ class TreeState:
             if left == right and (left > 1):
                 del s[:]
                 s.append(left)
-        print self.pyramid() # debug, fixme
+#        print self.pyramid() # debug, fixme
         return
 
     def pyramid(self):
@@ -269,13 +271,11 @@ class TreeState:
         bytes, j, b = [], 0, 0
         for i in range(len(flat)):
             b = b | (flat[i] << (2*(3-j)))
-            print bin(b)[2:].zfill(8), flat[i], j
             if j == 3:
                 bytes.append(b)
                 b = 0
             j = (j+1) % 4
         if j: bytes.append(b) # don't forget the last byte
-        print ' '.join([b[2:].zfill(8) for b in map(bin, bytes)])
         return ''.join(map(chr, bytes))
 
     def _flatten(self, subtree=None):
@@ -302,9 +302,8 @@ class TreeState:
         for i in range(len(data)*4):
             b = data[i//4]
             flat.append((ord(b)>> (2*(3-j)) & 3))
-            print bin(ord(b))[2:].zfill(8), flat[i], j
             j = (j+1) % 4
-        return self._fatten(flat)[0]
+        self.state = self._fatten(flat)[0]
 
     def _fatten(self, flat):
         v = flat[0]
@@ -313,7 +312,7 @@ class TreeState:
             return subtree, flat[1:]
         l, rem1 = self._fatten(flat[1:])
         r, rem2 = self._fatten(rem1)
-        subtree.append([l, r])
+        subtree.extend([l, r])
         return subtree, rem2
 
     def __str__(self):
@@ -329,8 +328,6 @@ class BTPeer:
         self.blocks = set()
         #self.txinv = set() # we'll probably want to do this in a more efficient fashion than a set
     def has_header(self, sha256):
-        if not type(sha256) == long:
-            print type(sha256)
         assert type(sha256) == long
         if sha256 in self.headers:
             return 'header'

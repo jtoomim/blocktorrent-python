@@ -8,6 +8,25 @@ import StringIO
 import binascii
 from hashlib import sha256
 
+def deser_varint(f):
+    nit = struct.unpack("<B", f.read(1))[0]
+    if nit == 253:
+        nit = struct.unpack("<H", f.read(2))[0]
+    elif nit == 254:
+        nit = struct.unpack("<I", f.read(4))[0]
+    elif nit == 255:
+        nit = struct.unpack("<Q", f.read(8))[0]
+    return nit
+
+def ser_varint(i):
+    if i < 253:
+        return chr(i)
+    elif i < 0x10000:
+        return chr(253) + struct.pack("<H", i)
+    elif i < 0x100000000L:
+        return chr(254) + struct.pack("<I", i)
+    return chr(255) + struct.pack("<Q", i)
+
 def deser_string(f):
     nit = struct.unpack("<B", f.read(1))[0]
     if nit == 253:
