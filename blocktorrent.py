@@ -76,8 +76,8 @@ class TreeState:
         structure that stores information about what parts of a merkle
         tree a peer has or does not have. The structure is itself a binary
         tree implemented as nested lists, where a node is a list
-        with one or two elements: Either [int nodestate], or
-        [int nodestate, [list child1, list child2]]. Whether the node has
+        with one or three elements: Either [int nodestate], or
+        [int nodestate, [list child1], [list child2]]. Whether the node has
         children can be inferred from the value of nodestate.
 
         nodestate can have one of four values:
@@ -88,7 +88,7 @@ class TreeState:
         merkle tree.
 
         1 (HASH): The peer has the hash for the corresponding merkle node. The peer
-        may or may not have any children.
+        may or may not have any children's hashes. This tree node will have children.
 
         2 (ALLHASH): The peer has the hash for the corresponding merkle node, and
         the hashes for all decendants of this node, up to the transaction
@@ -130,7 +130,7 @@ class TreeState:
             if s[0] in [0, 2, 3] or L==0: # if this node speaks for its decendants or is the target
                 return s[0]
             L -= 1
-            s = s[1][(i>>L)%2] # take the left or right subtree
+            s = s[1 + ((i>>L)%2)] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
 
     def fetchsubtree(self, level, index):
@@ -152,7 +152,7 @@ class TreeState:
             if s[0] in [0, 2, 3]: # if this node speaks for its decendants or is the target
                 return []
             L -= 1
-            s = s[1][(i>>L)%2] # take the left or right subtree
+            s = s[1 + ((i>>L)%2)] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
 
     def setnode(self, level, index, value):
@@ -194,11 +194,11 @@ class TreeState:
                 # the actual tree and not a copied subtree
                 assert len(s) == 1
                 s[0] = 1
-                s.append([[v],[v]]) # accidental code emoji
+                s.extend([[v],[v]]) # accidental code emoji
                 
             ancestors.append(s)
             L -= 1
-            s = s[1][(i>>L)%2] # take the left or right subtree
+            s = s[1 + ((i>>L)%2)] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
 
         if L == 0:
@@ -211,7 +211,7 @@ class TreeState:
                 assert len(s) == 1
                 assert s[0] <= value
                 s[0] = 1
-                s.append([[0],[0]])
+                s.extend([[0],[0]])
 
             else: # value == 2 or 3
                 del s[:]
@@ -222,7 +222,7 @@ class TreeState:
         while ancestors:
             s = ancestors.pop()
             if s[0] in (0, 2, 3): continue
-            left, right = s[1][0][0], s[1][1][0]
+            left, right = s[1][0], s[2][0]
             if left == right and (left > 1):
                 del s[:]
                 s.append(left)
@@ -236,8 +236,8 @@ class TreeState:
             levs[i][pos] = sub[0]
             if sub[0] in (0, 2, 3):
                 return
-            extract(sub[1][0], levs, i+1, (pos<<1)+0)
-            extract(sub[1][1], levs, i+1, (pos<<1)+1)
+            extract(sub[1], levs, i+1, (pos<<1)+0)
+            extract(sub[2], levs, i+1, (pos<<1)+1)
         levels = [[9]]
         extract(self.state, levels, 0, 0)
         spaces = int(2**(len(levels)))
@@ -266,7 +266,6 @@ class TreeState:
         will be zero-padded.
         """
         flat = self._flatten(self.fetchsubtree(level, index))
-        print flat
         bytes, j, b = [], 0, 0
         for i in range(len(flat)):
             b = b | (flat[i] << (2*(3-j)))
@@ -293,8 +292,8 @@ class TreeState:
         v = subtree[0]
         res.append(v)
         if v == 1:
-            res.extend(self._flatten(subtree[1][0]))
-            res.extend(self._flatten(subtree[1][1]))
+            res.extend(self._flatten(subtree[1]))
+            res.extend(self._flatten(subtree[2]))
         return res
 
     def deserialize(self, data):
