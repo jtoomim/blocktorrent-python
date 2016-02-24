@@ -12,6 +12,7 @@ import urllib2
 import sys
 import binascii
 import StringIO
+import math
 from lib import authproxy, halfnode, merkletree
 
 logs.debuglevels.extend(['btnet', 'bttree'])
@@ -131,8 +132,29 @@ class TreeState:
             L -= 1
             s = s[1][(i>>L)%2] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
-        raise
-  
+
+    def fetchsubtree(self, level, index):
+        """
+        Fetches a subtree. Returns [] if the subtree is not present.
+        """
+        assert index < 2**level
+        assert level >= 0
+
+        # Algorithm: we walk the tree until we either get to the target
+        # or reach a node that speaks for all its decendants
+
+        i = index # of working subtree
+        L = level # of working subtree
+        s = self.state # the subtree
+        while 1:
+            if L==0:
+                return s
+            if s[0] in [0, 2, 3]: # if this node speaks for its decendants or is the target
+                return []
+            L -= 1
+            s = s[1][(i>>L)%2] # take the left or right subtree
+            i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
+
     def setnode(self, level, index, value):
         """
         Sets the state of a node of the tree, specified by its level, index, and
@@ -204,30 +226,99 @@ class TreeState:
             if left == right and (left > 1):
                 del s[:]
                 s.append(left)
-        print self.flattened() # debug, fixme
+        print self.pyramid() # debug, fixme
         return
 
-    def flattened(self):
-        def flatten(sub, levs, i, pos):
+    def pyramid(self):
+        def extract(sub, levs, i, pos):
             if len(levs) <= i:
                 levs.append([9]*2**i)
             levs[i][pos] = sub[0]
             if sub[0] in (0, 2, 3):
                 return
-            flatten(sub[1][0], levs, i+1, (pos<<1)+0)
-            flatten(sub[1][1], levs, i+1, (pos<<1)+1)
+            extract(sub[1][0], levs, i+1, (pos<<1)+0)
+            extract(sub[1][1], levs, i+1, (pos<<1)+1)
         levels = [[9]]
-        flatten(self.state, levels, 0, 0)
-        spaces = 2**(len(levels)-2)
+        extract(self.state, levels, 0, 0)
+        spaces = int(2**(len(levels)))
         lines = []
-        for level in levels:
-            lines.append(((((" "*spaces + "%i")*len(level))) % tuple(level)).replace('9', '-'))
-            spaces /= 2
+        for i in range(len(levels)): # this formatting isn't quite correct, but it's semi-readable
+            level = levels[i]
+            s1, s2 = int(math.ceil(spaces/(2**(i+2)))), int(math.floor(spaces/(2**(i+2)))-1)
+            lines.append(((((" "*s1+"%i"+" "*s2)*len(level))) % tuple(level)).replace('9', '-'))
         return "\n".join(lines)
 
-    def __str__(self):
-        return self.flattened()
+    def serialize(self, level=0, index=0):
+        """
+        Serializes (a subtree of) the tree.
 
+        Each node's value is encoded as two bits. If the value is 0b01, then
+        the value will be followed with the serialization of its left subtree,
+        followed by the right subtree.
+
+        This serialization is not maximally efficient, as it stores interal
+        nodes that are made redundant by the its children, but the efficiency
+        can never be worse than 50% of the theoretical limit.
+
+        Binary packing follows a little endian format -- that is, the first
+        node value is the two MSb of the first byte. If the number of values
+        in the tree is not divisible by four, then the LSBs of the last byte
+        will be zero-padded.
+        """
+        flat = self._flatten(self.fetchsubtree(level, index))
+        print flat
+        bytes, j, b = [], 0, 0
+        for i in range(len(flat)):
+            b = b | (flat[i] << (2*(3-j)))
+            print bin(b)[2:].zfill(8), flat[i], j
+            if j == 3:
+                bytes.append(b)
+                b = 0
+            j = (j+1) % 4
+        if j: bytes.append(b) # don't forget the last byte
+        print ' '.join([b[2:].zfill(8) for b in map(bin, bytes)])
+        return ''.join(map(chr, bytes))
+
+    def _flatten(self, subtree=None):
+        """
+        Helper method for self.serialize(...). Walks the subtree recursively and
+        compiles a list of node values.
+        """
+        # Another algorithm that might be faster in python is to repr(self.state)
+        # and remove all non-numeric characters... but that wouldn't port over to
+        # C++ well. So we do it this way.
+        res = []
+        if subtree == None: subtree = self.state
+        if not subtree: return res
+        v = subtree[0]
+        res.append(v)
+        if v == 1:
+            res.extend(self._flatten(subtree[1][0]))
+            res.extend(self._flatten(subtree[1][1]))
+        return res
+
+    def deserialize(self, data):
+        flat = []
+        bytes, j = [], 0
+        for i in range(len(data)*4):
+            b = data[i//4]
+            flat.append((ord(b)>> (2*(3-j)) & 3))
+            print bin(ord(b))[2:].zfill(8), flat[i], j
+            j = (j+1) % 4
+        return self._fatten(flat)[0]
+
+    def _fatten(self, flat):
+        v = flat[0]
+        subtree = [v]
+        if v in (0, 2, 3):
+            return subtree, flat[1:]
+        l, rem1 = self._fatten(flat[1:])
+        r, rem2 = self._fatten(rem1)
+        subtree.append([l, r])
+        return subtree, rem2
+
+    def __str__(self):
+        return self.pyramid()
 
 class BTPeer:
     def __init__(self, addr, hostname=None):
