@@ -1,4 +1,5 @@
-# This file was copied from Slush's stratum-mining projectt
+# This file was copied from Slush's stratum-mining project
+# with some modifications
 
 
 '''Various helper methods. It probably needs some cleanup.'''

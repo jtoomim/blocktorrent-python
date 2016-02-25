@@ -2,7 +2,6 @@
 
 import blocktorrent
 import random, traceback, time
-
 node_count = 4
 
 def init_nodes(num_nodes):
@@ -33,7 +32,7 @@ def close_nodes(nodes):
         node.stop()
 
 def treestate_tests():
-    t = blocktorrent.TreeState()
+    t = blocktorrent.bttrees.TreeState()
     assert t.state == [0]
     t.setnode(level=2, index=1, value=1) # add path and children to node
     assert t.state == [1, [1, [0], [1, [0], [0]]], [0]]
@@ -57,7 +56,7 @@ def treestate_tests():
     t.setnode(4, 13, 2)
     t.setnode(5, 18, 3)
     s = t.serialize()
-    t2 = blocktorrent.TreeState()
+    t2 = blocktorrent.bttrees.TreeState()
     t2.deserialize(s)
     assert t.state == t2.state
 
