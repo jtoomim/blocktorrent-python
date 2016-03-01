@@ -15,9 +15,11 @@ import StringIO
 from lib import authproxy, halfnode, merkletree, util
 from lib.util import ser_varint, deser_varint
 import lib.bttrees as bttrees
+import random
 
 logs.debuglevels.extend(['btnet', 'bttree'])
 
+MAGIC_SIZE = 5
 MSG_DISCONNECT = 'kthxbai'
 MSG_CONNECT = 'ohai'
 MSG_HEADER = 'heads up!'
@@ -67,14 +69,18 @@ class BlockState:
         self.treeState = bttrees.TreeState()
 
 class BTPeer:
-    def __init__(self, addr, hostname=None):
+    def __init__(self, s, addr, hostname=None):
         if not hostname: hostname = str(addr[0])
+        self.socket = s
         self.hostname = hostname
         self.host = hostname + ":" + str(addr[1])
         self.addr = addr
         self.headers = {}
         self.blocks = set()
         #self.txinv = set() # we'll probably want to do this in a more efficient fashion than a set
+        self.magic = ''
+        for i in range(0, MAGIC_SIZE):
+            self.magic += chr(random.randrange(256)) # this would be more secure if using a CSPRNG
     def has_header(self, sha256):
         assert type(sha256) == long
         if sha256 in self.headers:
@@ -84,6 +90,8 @@ class BTPeer:
     def log_header(self, sha256):
         if not self.has_header(sha256):
             self.headers[sha256] = BlockState(sha256)
+    def send_message(self, t):
+        self.socket.sendto(self.magic + str(t), self.addr)
 
 
 class BTUDPClient(threading.Thread):
@@ -96,25 +104,33 @@ class BTUDPClient(threading.Thread):
         self.blockstates = {}
         self.merkles = {}
         self.e_stop = threading.Event()
+        self.magic_map = {}
 
-    def addnode(self, addr):
+    def addnode(self, addr, magic=None):
         newaddr = (socket.gethostbyname(addr[0]), addr[1])
+        if (newaddr in self.peers) and not (magic in self.magic_map):
+            # Hack to set correct inbound magic for peer
+            # Will remove hack when we have a better handshake sequence
+            self.magic_map[magic] = self.peers[newaddr]
         if not newaddr in self.peers:
-            peer = BTPeer(newaddr, addr[0])
+            peer = BTPeer(self.socket, newaddr, addr[0])
             self.peers[newaddr] = peer
-            self.socket.sendto(MSG_CONNECT, newaddr)
+            if magic:
+                self.magic_map[magic] = peer
+            peer.send_message(MSG_CONNECT)
             debuglog('btnet', "Adding peer %s" % peer.host)
         else:
             debuglog('btnet', "Peer %s:%i already exists" % addr)
 
-    def remnode(self, addr):
-        newaddr = (socket.gethostbyname(addr[0]), addr[1])
+    def remnode(self, peer, magic):
+        newaddr = (socket.gethostbyname(peer.addr[0]), peer.addr[1])
         if newaddr in self.peers:
             debuglog('btnet', "Removing peer %s" % (self.peers[newaddr].host))
             del self.peers[newaddr]
-            self.socket.sendto(MSG_DISCONNECT, newaddr)
+            del self.magic_map[magic]
+            peer.send_message(MSG_DISCONNECT)
         else:
-            debuglog('btnet', "Peer %s:%i doesn't exist" % addr)
+            debuglog('btnet', "Peer %s:%i doesn't exist" % peer.addr)
 
     def stop(self):
         self.e_stop.set()
@@ -164,7 +180,7 @@ class BTUDPClient(threading.Thread):
         for peer in self.peers:
             # fixme: this needs to be done with TCP to avoid spoofing an IP
             # and interrupting someone else's BT connections
-            self.socket.sendto(MSG_DISCONNECT, peer)
+            peer.send_message(MSG_DISCONNECT)
         if self.state != "closed":
             debuglog('btnet', "close")
             self.state = "closed"
@@ -175,35 +191,38 @@ class BTUDPClient(threading.Thread):
                 pass
 
     def handle_read(self):
-        t, addr = self.socket.recvfrom(65535)
-        self.process_message(t,addr)
+        packet, addr = self.socket.recvfrom(65535)
+        self.process_message(packet[MAGIC_SIZE:], addr, packet[0:MAGIC_SIZE])
 
-    def process_message(self, t, addr):
+    def process_message(self, t, addr, magic):
         debuglog('btnet', "Received from %s: %s" % (':'.join(map(str, addr)), repr(t)))
+        peer = None
+        if magic in magic_map:
+            peer = magic_map[magic]
 
         try:
             if t.startswith(MSG_DISCONNECT):
-                self.remnode(addr)
+                self.remnode(peer, magic)
 
             if t.startswith(MSG_CONNECT):
-                self.addnode(addr)
+                self.addnode(addr, magic)
 
             if t.startswith(MSG_HEADER):
-                self.recv_header(t, addr)
+                self.recv_header(t, peer)
 
             if t.startswith(MSG_MULTIPLE):
-                self.recv_multiple(t, addr)
+                self.recv_multiple(t, addr, magic)
         except:
             debuglog('btnet', 'Malformed UDP message or parsing error')
             debuglog('btnet', traceback.format_exc())
             traceback.print_exc()
 
-    def recv_multiple(self, data, addr):
+    def recv_multiple(self, data, addr, magic):
         s = StringIO.StringIO(data.split(MSG_MULTIPLE, 1)[1])
         count = deser_varint(s)
         for i in range(count):
             msg_length = deser_varint(s)
-            self.process_message(s.read(msg_length))
+            self.process_message(s.read(msg_length), addr, magic)
 
     def add_header(self, cblock):
         if not cblock.sha256 in self.blocks:
@@ -211,24 +230,23 @@ class BTUDPClient(threading.Thread):
             self.blockstates[cblock.sha256] = BlockState(cblock.sha256)
             #self.merkles[cblock.sha256] = ...
 
-    def send_header(self, cblock, addr):
-        self.peers[addr].log_header(cblock.sha256)
+    def send_header(self, cblock, peer):
+        peer.log_header(cblock.sha256)
         self.add_header(cblock)
         header = cblock.serialize_header()
         msg = MSG_HEADER + header
-        self.socket.sendto(msg, addr)
+        peer.send_message(msg)
 
-    def recv_header(self, data, addr):
+    def recv_header(self, data, peer):
         blk = halfnode.CBlock()
         f = StringIO.StringIO(data.split(MSG_HEADER, 1)[1])
         blk.deserialize_header(f)
         blk.calc_sha256()
         self.add_header(blk)
-        peer = self.peers[addr]
         if not peer.has_header(blk.sha256):
-            debuglog('btcnet', "Received header from %s: %s" % (self.peers[addr].host, repr(blk)))
+            debuglog('btcnet', "Received header from %s: %s" % (peer.host, repr(blk)))
         else:
-            debuglog('btcnet', "Received duplicate header from %s: %i" % (self.peers[addr].host, hex(blk.sha256)[2:]))
+            debuglog('btcnet', "Received duplicate header from %s: %i" % (peer.host, hex(blk.sha256)[2:]))
         peer.log_header(blk.sha256)
         self.broadcast_header(blk)
 
@@ -236,4 +254,4 @@ class BTUDPClient(threading.Thread):
         sha = cblock.sha256
         for peer in self.peers.values():
             if not peer.has_header(sha):
-                self.send_header(cblock, peer.addr)
+                self.send_header(cblock, peer)
