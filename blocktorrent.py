@@ -2,7 +2,6 @@
 # Public Domain
 
 import config
-from lib import bitcoinnode
 import lib.logs as logs
 from lib.logs import debuglog, log
 import socket
