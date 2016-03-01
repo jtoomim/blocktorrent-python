@@ -16,6 +16,7 @@ from lib import authproxy, halfnode, merkletree, util
 from lib.util import ser_varint, deser_varint
 import lib.bttrees as bttrees
 import random
+import traceback
 
 logs.debuglevels.extend(['btnet', 'bttree'])
 
@@ -108,6 +109,8 @@ class BTUDPClient(threading.Thread):
 
     def addnode(self, addr, magic=None):
         newaddr = (socket.gethostbyname(addr[0]), addr[1])
+        if magic:
+            debuglog('btnet', "Peer wants to use inbound magic %s" % magic.encode('hex'))
         if (newaddr in self.peers) and not (magic in self.magic_map):
             # Hack to set correct inbound magic for peer
             # Will remove hack when we have a better handshake sequence
@@ -123,14 +126,15 @@ class BTUDPClient(threading.Thread):
             debuglog('btnet', "Peer %s:%i already exists" % addr)
 
     def remnode(self, peer, magic):
-        newaddr = (socket.gethostbyname(peer.addr[0]), peer.addr[1])
-        if newaddr in self.peers:
-            debuglog('btnet', "Removing peer %s" % (self.peers[newaddr].host))
-            del self.peers[newaddr]
-            del self.magic_map[magic]
-            peer.send_message(MSG_DISCONNECT)
-        else:
-            debuglog('btnet', "Peer %s:%i doesn't exist" % peer.addr)
+        if peer:
+            newaddr = (socket.gethostbyname(peer.addr[0]), peer.addr[1])
+            if newaddr in self.peers:
+                debuglog('btnet', "Removing peer %s" % (self.peers[newaddr].host))
+                del self.peers[newaddr]
+                del self.magic_map[magic]
+                peer.send_message(MSG_DISCONNECT)
+            else:
+                debuglog('btnet', "Peer %s:%i doesn't exist" % peer.addr)
 
     def stop(self):
         self.e_stop.set()
@@ -146,20 +150,16 @@ class BTUDPClient(threading.Thread):
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.socket.bind(('localhost', self.udp_listen))
 
-
-            epoll = select.epoll()
-            epoll.register(self.socket.fileno(), select.EPOLLIN)
-
             while self.state != "closed":
                 if self.e_stop.isSet():
                     break
 
-                events = epoll.poll(timeout=1)
-                for fd, ev in events:
-                    if ev & select.EPOLLIN:
-                        self.handle_read()
-                    elif ev & select.EPOLLHUP:
-                        self.handle_close()
+                rd, wr, ex = select.select([self.socket], [], [self.socket], 1)
+                
+                for s in rd:
+                    self.handle_read()
+                for s in ex:
+                    self.handle_close()
 
             self.handle_close()
 
@@ -177,15 +177,13 @@ class BTUDPClient(threading.Thread):
                     traceback.print_exc()
 
     def handle_close(self):
-        for peer in self.peers:
-            # fixme: this needs to be done with TCP to avoid spoofing an IP
-            # and interrupting someone else's BT connections
-            peer.send_message(MSG_DISCONNECT)
+        for addr in self.peers:
+            self.peers[addr].send_message(MSG_DISCONNECT)
         if self.state != "closed":
             debuglog('btnet', "close")
             self.state = "closed"
             try:
-                self.socket.shutdown(socket.SHUT_RDWR)
+                time.sleep(1) # wait for MSG_DISCONNECT to get out
                 self.socket.close()
             except:
                 pass
@@ -195,10 +193,12 @@ class BTUDPClient(threading.Thread):
         self.process_message(packet[MAGIC_SIZE:], addr, packet[0:MAGIC_SIZE])
 
     def process_message(self, t, addr, magic):
-        debuglog('btnet', "Received from %s: %s" % (':'.join(map(str, addr)), repr(t)))
+        debuglog('btnet', "Received from %s(%s): %s" % (':'.join(map(str, addr)), magic.encode('hex'), repr(t)))
         peer = None
-        if magic in magic_map:
-            peer = magic_map[magic]
+        if magic in self.magic_map:
+            peer = self.magic_map[magic]
+        else:
+            debuglog('btnet', "Couldn't find %s in peer magic map" % magic.encode('hex'))
 
         try:
             if t.startswith(MSG_DISCONNECT):

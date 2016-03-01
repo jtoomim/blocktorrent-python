@@ -12,8 +12,8 @@ def init_nodes(num_nodes):
         nodes.append(n)
         n.start()
         time.sleep(0.05)
-        if not i==0:
-            n.addnode(('localhost', ports[i-1]))
+        for j in range(i):
+            n.addnode(('localhost', ports[j]))
     return nodes, ports
 
 def run_test(nodes):
@@ -70,6 +70,9 @@ def main():
         traceback.print_exc()
 
     time.sleep(1)
+    #nodes[0].peers.values()[0].magic = 'abcde' # corrupt outbound magic
+    nodes[0].stop()
+    time.sleep(2)
 
     try:
         close_nodes(nodes)
