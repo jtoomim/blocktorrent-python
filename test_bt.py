@@ -60,6 +60,9 @@ def treestate_tests():
     t2.deserialize(s)
     assert t.state == t2.state
 
+def test_f():
+    print('Hello from callback')
+    
 def main():
     treestate_tests()
 
@@ -72,7 +75,10 @@ def main():
     time.sleep(1)
     #nodes[0].peers.values()[0].magic = 'abcde' # corrupt outbound magic
     nodes[0].stop()
-    time.sleep(2)
+    nodes[1].add_callback(test_f, 0.5)
+    nodes[1].add_callback(test_f, 1.5)
+    nodes[2].add_callback(test_f, 2.0)
+    time.sleep(3)
 
     try:
         close_nodes(nodes)

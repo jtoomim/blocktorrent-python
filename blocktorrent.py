@@ -17,6 +17,9 @@ from lib.util import ser_varint, deser_varint
 import lib.bttrees as bttrees
 import random
 import traceback
+import time
+import thread
+import Queue
 
 logs.debuglevels.extend(['btnet', 'bttree'])
 
@@ -106,6 +109,9 @@ class BTUDPClient(threading.Thread):
         self.merkles = {}
         self.e_stop = threading.Event()
         self.magic_map = {}
+        self.waker = Waker()
+        self.event_loop_started = False
+        self.callback_queue = Queue.PriorityQueue()
 
     def addnode(self, addr, magic=None):
         newaddr = (socket.gethostbyname(addr[0]), addr[1])
@@ -138,6 +144,7 @@ class BTUDPClient(threading.Thread):
 
     def stop(self):
         self.e_stop.set()
+        self.waker.wake()
 
     def run(self):
         if not logs.logfile:
@@ -149,15 +156,37 @@ class BTUDPClient(threading.Thread):
             debuglog('btnet', "starting BT server on %i" % self.udp_listen)
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.socket.bind(('localhost', self.udp_listen))
+            self.event_loop_thread = thread.get_ident()
+            self.event_loop_started = True
 
             while self.state != "closed":
                 if self.e_stop.isSet():
                     break
 
-                rd, wr, ex = select.select([self.socket], [], [self.socket], 1)
+                select_timeout = 30
+                # Check for callbacks
+                current_time = time.time()
+                while self.callback_queue.qsize() > 0:
+                    item = self.callback_queue.get(False)
+                    if item[0] <= current_time:
+                        # Callback delay has passed, so remove item from queue
+                        # and do the callback.
+                        item[1]()
+                    else:
+                        # Still need to wait for delay to pass. Adjust select
+                        # timeout to perform the required delay.
+                        select_timeout = min(select_timeout, item[0] - current_time)
+                        # Don't remove items from queue until delay has passed.
+                        self.callback_queue.put(item)
+                        break
+                read_list = [self.socket, self.waker.out_end]
+                rd, wr, ex = select.select(read_list, [], [self.socket], select_timeout)
                 
                 for s in rd:
-                    self.handle_read()
+                    if s == self.waker.out_end:
+                        self.waker.handle_read()
+                    else:
+                        self.handle_read()
                 for s in ex:
                     self.handle_close()
 
@@ -175,6 +204,21 @@ class BTUDPClient(threading.Thread):
                     logs.logfile = None
                 except:
                     traceback.print_exc()
+
+    def add_callback(self, callback, delay=0):
+        '''This is the only way to affect the event loop thread from other
+        threads. This will schedule a callback within the context of the
+        event loop thread. delay is in seconds. Use a delay of 0 to schedule
+        the callback immediately.
+        '''
+        timeout_as_unix = time.time() + delay
+        self.callback_queue.put((timeout_as_unix, callback))
+        if (self.event_loop_started and
+            (thread.get_ident() != self.event_loop_thread)):
+            # We're not in the event loop thread, so select() might be
+            # waiting. Wake it up just to be sure that the event loop thread
+            # sees the new callback.
+            self.waker.wake()
 
     def handle_close(self):
         for addr in self.peers:
@@ -255,3 +299,48 @@ class BTUDPClient(threading.Thread):
         for peer in self.peers.values():
             if not peer.has_header(sha):
                 self.send_header(cblock, peer)
+
+class Waker:
+    '''One problem with select() is that there is no easy way to interrupt it.
+    This means that if there is a worker thread which has completed its work,
+    it has to wait for the select() to return or timeout before anything
+    can be sent. A Waker is a connected socket pair, with the receiving one
+    added to the select() list. You can force the select() to return by
+    shoving bytes into one end of the socket pair - this is exactly what
+    the wake() method does.
+    '''
+    def __init__(self):
+        # Inspired by https://github.com/zopefoundation/Zope/blob/master/src/ZServer/medusa/thread/select_trigger.py
+        self.in_end = socket.socket()
+        self.in_end.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        attempts = 0
+        # Attempt to connect in_end to another socket. Apparently on Windows
+        # this sometimes goes wrong for no apparent reason, and a workaround
+        # is to just try again.
+        # See http://mail.zope.org/pipermail/zope/2005-July/160433.html for
+        # more details.
+        while True:
+            attempts += 1
+            bind_socket = socket.socket()
+            bind_socket.bind(('127.0.0.1', 0)) # let OS choose port to bind to
+            address = bind_socket.getsockname()
+            bind_socket.listen(1)
+            try:
+                self.in_end.connect(address)
+                break # success
+            except socket.error, e:
+                if e[0] != errno.WSAEADDRINUSE:
+                    raise
+                if attempts >= 10:
+                    self.in_end.close()
+                    bind_socket.close()
+                    raise BindError('Could not create socket pair')
+                bind_socket.close()
+        self.out_end, address = bind_socket.accept()
+        bind_socket.close()
+    
+    def handle_read(self):
+        self.out_end.recv(1024) # just discard it
+
+    def wake(self):
+        self.in_end.send('W')
