@@ -9,6 +9,11 @@ import StringIO
 import binascii
 from hashlib import sha256
 
+def to_hex(s):
+    assert type(s) ==  str # fixme: handle other types
+    assert len(s) == 32
+    return binascii.hexlify(s[::-1])
+
 def deser_varint(f):
     nit = struct.unpack("<B", f.read(1))[0]
     if nit == 253:

@@ -1,8 +1,33 @@
 #!/usr/bin/env python
 
 import blocktorrent
-import random, traceback, time
+import random, traceback, time, math, simplejson
 node_count = 4
+
+def blockfromfile(fn):
+    # not sure if this works yet
+    with open(fn) as f:
+        template = simplejson.loads(f.read())
+    block = blocktorrent.mininode.CBlock()
+    block.nVersion = template['version']
+    block.hashPrevBlock = int(template['previousblockhash'], 16)
+    block.nTime = template['time']
+    block.nBits = int(template['bits'], 16)
+    block.nNonce = template['nonce']
+    vtx = []
+    btx = []
+    for tx in template['tx']:
+        btx.append(binascii.unhexlify(tx['data']))
+        ctx = mininode.CTransaction()
+        ctx.deserialize(StringIO.StringIO(btx[-1]))
+        ctx.calc_sha256()
+        vtx.append(ctx)
+        assert ctx.sha256 == int(tx['hash'], 16)
+    block.vtx = vtx
+    block.calc_merkle_root()
+    block.calc_sha256()
+    return block
+
 
 def init_nodes(num_nodes):
     ports = random.sample(range(1024, 65535), num_nodes)
@@ -26,10 +51,36 @@ def run_test(nodes):
     print "Getblocktemplate from RPC produced:", headerinfo
     for peer in nodes[0].peers:
         nodes[0].send_header(blk, peer)
+    print "Attempting btmerkletree_tests(blk). This doesn't quite work yet, due to BTMerkleTree not checking cousins in addnode(...)."
+    btmerkletree_tests(blk)
+    btmerkletree_tests(blk)
+    btmerkletree_tests(blk)
+    btmerkletree_tests(blk)
+    btmerkletree_tests(blk)
+    print "jobs done"
 
 def close_nodes(nodes):
     for node in nodes:
         node.stop()
+
+def btmerkletree_tests(blk):
+    start = time.time()
+    mt = blocktorrent.bttrees.BTMerkleTree(blk.hashMerkleRoot)
+    count = len(blk.vtx)
+    levels = int(math.ceil(math.log(count, 2)))
+    mt.txcounthints.append(count)
+    for i in range(len(blk.vtx)):
+        mt.addhash(levels, i, blk.vtx[i].sha256)
+    middle = time.time()
+
+    #print hex(blk.hashMerkleRoot)
+    hashcount = `mt.valid`.count("['") + `mt.valid`.count('["') 
+    print "Found something close to %i hashes (hackishly counted) for a block with %i transactions" % (hashcount, len(blk.vtx))
+    print "Nodes still in purgatory:", mt.purgatory.keys()
+    end = time.time()
+    print "btmerkletree_tests took %3.6f ms, or %3.6f until the middle" % (1000*(end - start), 1000*(middle-start))
+    #print `mt.valid`
+
 
 def treestate_tests():
     t = blocktorrent.bttrees.TreeState()

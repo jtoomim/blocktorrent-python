@@ -1,7 +1,10 @@
-import config
-import math
+import math, binascii
+from hashlib import sha256
+
+import config, util
 import logs as logs
 from logs import debuglog, log
+from util import to_hex
 
 class TreeState:
     MISSING = 0
@@ -20,7 +23,7 @@ class TreeState:
         children can be inferred from the value of nodestate.
 
         nodestate can have one of four values:
-        
+
         0 (MISSING): The peer does not have any information about the corresponding
         node in the merkle tree or its decendants. This node will be a leaf
         in the TreeState structure, but not necessarily a leaf in the actual
@@ -50,7 +53,7 @@ class TreeState:
         will return the state specified by that ancestor.
 
         level == 0 is the merkle root hash.
-        
+
         index is the position in the corresponding level, and is coincidentally
         also the path that needs to be followed from the root to arrive at the
         desired node, reading the bits from left to right (LSB is the last step
@@ -134,7 +137,6 @@ class TreeState:
                 assert len(s) == 1
                 s[0] = 1
                 s.extend([[v],[v]]) # accidental code emoji
-                
             ancestors.append(s)
             L -= 1
             s = s[1 + ((i>>L)%2)] # take the left or right subtree
@@ -253,5 +255,192 @@ class TreeState:
 
     def __str__(self):
         return self.pyramid()
+
+
+class BTMerkleTree:
+    """
+    Class to build and incrementally validate a merkle tree for a block. This
+    class allows for transactions or internal node hashes to be added in
+    any order, and will distinguish between known-valid nodes (nodes that have
+    been connected to the merkle root hash) stored in the self.valid tree,
+    and nodes that are currently just candidates (stored in self.purgatory
+    dict).
+    """
+
+    def __init__(self, root):
+        if type(root) == long:
+            root = util.ser_uint256(root)
+        self.valid = [root, [], []]
+        # A dict for purgatory is a bit of a hack, and should probably be fixed before switching to C++.
+        self.purgatory = {} # key = (level, index); value = [candidate hashes]
+        self.peerorigins = {} # key = hash, value = peer
+        self.txcounthints = [] # we can't trust it when a peer says how many txes there are, so they're just hints
+
+    def getnode(self, level, index, subtree=False):
+        """
+        Gets the hash at the specified level and index of the validated tree.
+        If that node has not yet been added, None will be returned.
+        """
+        assert index < 2**level
+        assert level >= 0
+        assert level <= config.MAX_DEPTH
+        i = index # of subtree
+        L = level # of subtree
+        s = self.valid # the subtree
+        while 1:
+            if L==0: # this node is the target
+                if subtree:
+                    return s
+                elif not s:
+                    return None
+                else:
+                    return s[0]
+            elif len(s) < 3:
+                return None
+            L -= 1
+            s = s[1 + ((i>>L)%2)] # take the left or right subtree
+            i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
+
+    def setnode(self, level, index, hash):
+        """
+        Sets the hash at the specified level and index of the validated tree.
+        The parent hash must have already been added.
+        """
+        assert index < 2**level
+        assert level >= 0
+        assert level <= config.MAX_DEPTH
+        i = index # of subtree
+        L = level # of subtree
+        s = self.valid # the subtree
+        while 1:
+            if L==0: # this node is the target
+                s.extend([hash, [], []])
+                return
+            elif len(s) < 3:
+                debuglog('bttree', 'setnode(%i, %i, hash) found undersized element at %i, %i: %s' % (level, index, L, i, `s`))
+                raise
+            L -= 1
+            s = s[1 + ((i>>L)%2)] # take the left or right subtree
+            i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
+
+
+    def addhash(self, level, index, hash, peer=None):
+        """
+        Adds a hash to either the validated tree (when possible) or to the
+        unvalidated cache, self.purgatory. This will also add any computed parent
+        hashes recursively. If the hash makes it into the validated tree, this
+        will also check the nephews of this hash to see if they can now be
+        validated. However, direct descendents will not be checked, and must be
+        checked by the caller.
+        """
+        if type(hash) == long:
+            hash = util.ser_uint256(hash)
+        key = (level, index)
+        if key in self.purgatory:
+            if self.purgatory[key] == hash:
+                return
+            else:
+                oldpeer = self.peerorigins[self.purgatory[key]] if self.purgatory[key] in self.peerorigins else None
+                debuglog('btnet', 'Warning: received two different hashes for the same part of a tree. Replacing old hash.')
+                debuglog('btnet', 'Cause is likely either network corruption or a malicious peer. Peers:')
+                debuglog('btnet', oldpeer, peer)
+                debuglog('btnet', 'Hash added is (%i, %i): %s. Oldhash: %s.' % (level, index, to_hex(hash), to_hex(self.purgatory[key])))
+                # fixme: peer banning
+                # continue to add the new hash and validate
+        elif self.getnode(level, index):
+            debuglog('bttree', 'Debug warning: level=%i index=%i already validated in tree' % (level, index))
+            return
+        self.purgatory[key] = hash
+        #self.peerorigins[hash] = peer # fixme: make sure memory growth is bounded
+
+        parent = self.getnode(level-1, index//2) # is our parent already valid?
+        #if parent: print "valid parent of %i,%i is %i,%i:" %(level, index, level-1, index//2), to_hex(parent])
+        siblingkey = (level, index ^ 1)
+
+        if not siblingkey in self.purgatory: # Is this is the right edge of the tree?
+            if not index & 1: # if even (left sibling)
+                for hint in self.txcounthints:
+                    height = int(math.ceil(math.log(hint, 2)))
+                    edge = (hint-1) >> (height - level)
+                    if index == edge:
+                        self.purgatory[siblingkey] = hash # this can be overwritten later
+                        break
+
+        if siblingkey in self.purgatory: # then we can check one level up
+            sib = self.purgatory[siblingkey]
+            parenthash = self.calcparent(sib, hash) if (index%2) else self.calcparent(hash, sib) # left sibling goes first
+            if parent and parent == parenthash:
+                result = 'connected'
+            elif parent and parent != parenthash:
+                debuglog('btnet', 'Invalid hash(es) encountered when checking (%i, %i): %s.' % (level, index, to_hex(hash)))
+                debuglog('btnet', 'Parent (%i, %i) = %s not %s' %  (level-1, index//2, to_hex(parent), to_hex(parenthash)))
+                result = 'invalid'
+            else: # recurse one level up
+                result = self.addhash(level-1, index//2, parenthash, None)
+        else:
+            result = 'orphan'
+
+        if result == 'connected':
+            self.setnode(level, index, hash)
+            self.setnode(level, index^1, sib)
+            del self.purgatory[key]
+            del self.purgatory[siblingkey]
+            # the recursive caller of addhash will take care of the children of key, but not siblingkey
+            self.checkchildren(siblingkey[0], siblingkey[1])
+        elif result == 'invalid':
+            for k in key, siblingkey:
+                # fixme: for multi-level recursion, there's a good chance we're deleting the wrong txes.
+                # should we delete all of the decendants of the lowest valid hash to which this resolves?
+                # or should we leave these hashes all in purgatory? or what? who do we ban?
+                debuglog('btnet', 'Invalid hash(es) encountered. Deleting: (%i, %i): %s.' % (k[0], k[1], to_hex(self.purgatory[k])))
+                del self.purgatory[k]
+        elif result == 'orphan':
+            pass # fixme: deal with peer info (and banning) in each of these branches above
+        return result
+
+    def checkchildren(self, level, index):
+        """
+        Recursively checks the descendents of a node to see if they can be
+        validated.
+        """
+        key = (level, index)
+        hash = self.getnode(level, index)
+        assert hash
+        assert not key in self.purgatory
+        c1k, c2k = ((level+1, index*2), (level+1, index*2+1)) # child 1/2 key
+        keys = [key, c1k, c2k]
+        hashes = [hash, None, None]
+        for i in range(1, 3):
+            k = keys[i]
+            hashes[i] = self.purgatory[k] if k in self.purgatory else None
+            if not hashes[i]:
+                if not keys[i][1] & 1: # if even (left sibling), we check to see if this is the right edge of the tree
+                    for hint in self.txcounthints:
+                        height = int(math.ceil(math.log(hint, 2)))
+                        if keys[i][0] > height: continue
+                        edge = (hint-1) >> (height - keys[i][0])
+                        if index*2 == edge:
+                            hashes[i] = hashes[1] # this can be overwritten later
+                            break
+
+
+                else:
+                    if level <= int(math.ceil(math.log(max(self.txcounthints), 2))) and index <= max(self.txcounthints):
+                        debuglog('bttree', "Couldn't find hash for %i %i when checking %i %i" % (k[0], k[1], key[0], key[1]))
+                    return
+        if self.calcparent(hashes[1], hashes[2]) == hashes[0]:
+            for i in range(1,3):
+                self.setnode(keys[i][0], keys[i][1], hashes[i])
+                del self.purgatory[keys[i]]
+                self.checkchildren(keys[i][0], keys[i][1])
+        else:
+            debuglog('bttree', "Invalid descendents encountered in checkchildren. This should not happen. Keys: ", keys)
+
+    def calcparent(self, hash1, hash2):
+        if type(hash1) == long:
+            hash1 = util.ser_uint256(hash1)
+        if type(hash2) == long:
+            hash2 = util.ser_uint256(hash2)
+        return util.doublesha(hash1 + hash2)
 
 

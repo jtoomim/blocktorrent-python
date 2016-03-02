@@ -2,7 +2,6 @@
 # Public Domain
 
 import config
-from lib import bitcoinnode
 import lib.logs as logs
 from lib.logs import debuglog, log
 import socket
@@ -12,9 +11,7 @@ import urllib2
 import sys
 import binascii
 import StringIO
-from lib import authproxy, halfnode, merkletree, util
-from lib.util import ser_varint, deser_varint
-import lib.bttrees as bttrees
+from lib import authproxy, mininode, merkletree, util, bttrees
 import random
 import traceback
 import time
@@ -41,7 +38,7 @@ def gbt():
     return proxy.getblocktemplate()
 
 def blockfromtemplate(template):
-    block = halfnode.CBlock()
+    block = mininode.CBlock()
     block.nVersion = template['version']
     block.hashPrevBlock = int(template['previousblockhash'], 16)
     block.nTime = template['curtime']
@@ -51,15 +48,14 @@ def blockfromtemplate(template):
     btx = []
     for tx in template['transactions']:
         btx.append(binascii.unhexlify(tx['data']))
-        ctx = halfnode.CTransaction()
+        ctx = mininode.CTransaction()
         ctx.deserialize(StringIO.StringIO(btx[-1]))
         ctx.calc_sha256()
         vtx.append(ctx)
         assert ctx.sha256 == int(tx['hash'], 16)
     block.vtx = vtx
     
-    merkle = merkletree.MerkleTree(data=btx, detailed=True)
-    block.hashMerkleRoot = int(binascii.hexlify(merkle.merkleRoot()), 16)
+    block.hashMerkleRoot = block.calc_merkle_root()
     block.calc_sha256()
     return block
 
@@ -263,10 +259,10 @@ class BTUDPClient(threading.Thread):
 
     def recv_multiple(self, data, addr, magic):
         s = StringIO.StringIO(data.split(MSG_MULTIPLE, 1)[1])
-        count = deser_varint(s)
+        count = util.deser_varint(s)
         for i in range(count):
-            msg_length = deser_varint(s)
-            self.process_message(s.read(msg_length), addr, magic)
+            msg_length = util.deser_varint(s)
+            self.process_message(s.read(msg_length), addr magic)
 
     def add_header(self, cblock):
         if not cblock.sha256 in self.blocks:
@@ -277,14 +273,14 @@ class BTUDPClient(threading.Thread):
     def send_header(self, cblock, peer):
         peer.log_header(cblock.sha256)
         self.add_header(cblock)
-        header = cblock.serialize_header()
+        header = mininode.CBlockHeader.serialize(cblock)
         msg = MSG_HEADER + header
         peer.send_message(msg)
 
     def recv_header(self, data, peer):
-        blk = halfnode.CBlock()
+        blk = mininode.CBlock()
         f = StringIO.StringIO(data.split(MSG_HEADER, 1)[1])
-        blk.deserialize_header(f)
+        mininode.CBlockHeader.deserialize(blk, f)
         blk.calc_sha256()
         self.add_header(blk)
         if not peer.has_header(blk.sha256):
