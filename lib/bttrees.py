@@ -6,6 +6,31 @@ import logs as logs
 from logs import debuglog, log
 from util import to_hex
 
+
+def splitrun(level, start, length, hashes):
+    """
+    Splits one long run into a group of shorter runs, each of which is of size
+    2**n and aligned with starts and ends on 2**n index boundaries, allowing
+    each run to be used to compute one hash that is an ancestor to all nodes
+    in the run and to no other nodes.
+    """
+    max_length = 2**level
+    assert start + length <= max_length
+    assert length == len(hashes)
+    rightedge = hashes[-1] == hashes[-2]
+    # a run of length 2**n must start at an index where the n LSB have a value
+    # of 0 and end where the n LSB have a value of 1.
+    runs = []
+    i = start
+    while i < start+length:
+        # count how many LSB are zero
+        LSB = 0
+        while not (i & (1<<LSB)) and (i + 2**LSB < max_length):
+            LSB += 1
+        runs.append([i, 2**LSB, hashes[i-start:i+2**LSB-start]])
+        i += 2**LSB
+    return runs
+
 class TreeState:
     MISSING = 0
     HASH = 1
@@ -214,7 +239,9 @@ class TreeState:
                 b = 0
             j = (j+1) % 4
         if j: bytes.append(b) # don't forget the last byte
-        return ''.join(map(chr, bytes))
+        level_ser = util.ser_varint(level)
+        index_ser = util.ser_varint(index)
+        return util.ser_varint(len(bytes)+len(level_ser)+len(index_ser)) + level_ser + index_ser + ''.join(map(chr, bytes))
 
     def _flatten(self, subtree=None):
         """
@@ -234,7 +261,13 @@ class TreeState:
             res.extend(self._flatten(subtree[2]))
         return res
 
-    def deserialize(self, data):
+    def deserialize(self, f):
+        length = util.deser_varint(f)
+        level = util.deser_varint(f)
+        index = util.deser_varint(f)
+        if level > 0 or index > 0:
+            raise NotImplementedError
+        data = f.read(length)
         flat = []
         bytes, j = [], 0
         for i in range(len(data)*4):
@@ -271,10 +304,13 @@ class BTMerkleTree:
         if type(root) == long:
             root = util.ser_uint256(root)
         self.valid = [root, [], []]
+        self.state = TreeState()
         # A dict for purgatory is a bit of a hack, and should probably be fixed before switching to C++.
         self.purgatory = {} # key = (level, index); value = [candidate hashes]
         self.peerorigins = {} # key = hash, value = peer
         self.txcounthints = [] # we can't trust it when a peer says how many txes there are, so they're just hints
+        self.levels = 0
+        self.txcount = 0
 
     def getnode(self, level, index, subtree=False):
         """
@@ -301,7 +337,18 @@ class BTMerkleTree:
             s = s[1 + ((i>>L)%2)] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
 
-    def setnode(self, level, index, hash):
+    def upgradestate(self, level, index, edge=False):
+        # fixme: do we have the tx itself?
+        # fixme: is this the right edge?
+        if self.levels and level == self.levels:
+            self.state.setnode(level, index, 2)
+        else:
+            self.state.setnode(level, index, 1)
+        if edge:
+            for i in range(index, 2**level):
+                self.state.setnode(level, i, 2)
+
+    def setnode(self, level, index, hash, edge=False):
         """
         Sets the hash at the specified level and index of the validated tree.
         The parent hash must have already been added.
@@ -315,6 +362,7 @@ class BTMerkleTree:
         while 1:
             if L==0: # this node is the target
                 s.extend([hash, [], []])
+                self.upgradestate(level, index, edge)
                 return
             elif len(s) < 3:
                 debuglog('bttree', 'setnode(%i, %i, hash) found undersized element at %i, %i: %s' % (level, index, L, i, `s`))
@@ -361,6 +409,7 @@ class BTMerkleTree:
             if not index & 1: # if even (left sibling)
                 for hint in self.txcounthints:
                     height = int(math.ceil(math.log(hint, 2)))
+                    if level > height: continue
                     edge = (hint-1) >> (height - level)
                     if index == edge:
                         self.purgatory[siblingkey] = hash # this can be overwritten later
@@ -371,29 +420,39 @@ class BTMerkleTree:
             parenthash = self.calcparent(sib, hash) if (index%2) else self.calcparent(hash, sib) # left sibling goes first
             if parent and parent == parenthash:
                 result = 'connected'
-            elif parent and parent != parenthash:
+            elif parent and parent != parenthash and not sib == hash:
                 debuglog('btnet', 'Invalid hash(es) encountered when checking (%i, %i): %s.' % (level, index, to_hex(hash)))
                 debuglog('btnet', 'Parent (%i, %i) = %s not %s' %  (level-1, index//2, to_hex(parent), to_hex(parenthash)))
                 result = 'invalid'
+            elif parent and parent != parenthash and sib == hash:
+                debuglog('btnet', 'Found a bad edge: (%i, %i) = %s not %s' %  (level-1, index//2, to_hex(parent), to_hex(parenthash)))
+                result = 'orphan' # incorrect tx count hint
             else: # recurse one level up
                 result = self.addhash(level-1, index//2, parenthash, None)
         else:
             result = 'orphan'
 
         if result == 'connected':
-            self.setnode(level, index, hash)
-            self.setnode(level, index^1, sib)
+            self.setnode(level, index, hash, edge=(hash==sib))
+            self.setnode(level, index^1, sib, edge=(hash==sib))
             del self.purgatory[key]
             del self.purgatory[siblingkey]
+            if hash == sib and level == self.levels: # right edge, bottom row
+                self.txcount = index|1-1 # left sib's index
             # the recursive caller of addhash will take care of the children of key, but not siblingkey
             self.checkchildren(siblingkey[0], siblingkey[1])
         elif result == 'invalid':
-            for k in key, siblingkey:
-                # fixme: for multi-level recursion, there's a good chance we're deleting the wrong txes.
-                # should we delete all of the decendants of the lowest valid hash to which this resolves?
-                # or should we leave these hashes all in purgatory? or what? who do we ban?
-                debuglog('btnet', 'Invalid hash(es) encountered. Deleting: (%i, %i): %s.' % (k[0], k[1], to_hex(self.purgatory[k])))
-                del self.purgatory[k]
+            if sib == hash: # invalid hint about the number of transactions
+                debuglog('btnet', 'Invalid txcount hint: %i among ' % hint, self.txcounthints)
+                del self.purgatory[max(siblingkey, key)]
+                result = 'orphan'
+            else:
+                for k in key, siblingkey:
+                    # fixme: for multi-level recursion, there's a good chance we're deleting the wrong txes.
+                    # should we delete all of the decendants of the lowest valid hash to which this resolves?
+                    # or should we leave these hashes all in purgatory? or what? who do we ban?
+                    debuglog('btnet', 'Invalid hash(es) encountered. Deleting: (%i, %i): %s.' % (k[0], k[1], to_hex(self.purgatory[k])))
+                    #del self.purgatory[k]
         elif result == 'orphan':
             pass # fixme: deal with peer info (and banning) in each of these branches above
         return result
@@ -403,6 +462,7 @@ class BTMerkleTree:
         Recursively checks the descendents of a node to see if they can be
         validated.
         """
+        # fixme: there's a lot of duplicate code between this and addhash
         key = (level, index)
         hash = self.getnode(level, index)
         assert hash
@@ -420,6 +480,7 @@ class BTMerkleTree:
                         if keys[i][0] > height: continue
                         edge = (hint-1) >> (height - keys[i][0])
                         if index*2 == edge:
+                            print "found edge at ", keys[[i]]
                             hashes[i] = hashes[1] # this can be overwritten later
                             break
 
@@ -429,8 +490,10 @@ class BTMerkleTree:
                         debuglog('bttree', "Couldn't find hash for %i %i when checking %i %i" % (k[0], k[1], key[0], key[1]))
                     return
         if self.calcparent(hashes[1], hashes[2]) == hashes[0]:
+            if hashes[1] == hashes[2] and level == self.levels: # right edge, bottom row
+                self.txcount = index|1-1 # left sib's index
             for i in range(1,3):
-                self.setnode(keys[i][0], keys[i][1], hashes[i])
+                self.setnode(keys[i][0], keys[i][1], hashes[i], edge=(hashes[1]==hashes[2]))
                 del self.purgatory[keys[i]]
                 self.checkchildren(keys[i][0], keys[i][1])
         else:
