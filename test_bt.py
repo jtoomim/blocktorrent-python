@@ -38,7 +38,7 @@ def init_nodes(num_nodes):
         n.start()
         time.sleep(0.05)
         for j in range(i):
-            n.addnode(('localhost', ports[j]))
+            nodes[i].add_callback(nodes[i].connect, 0, (('localhost', ports[j])))
     return nodes, ports
 
 def run_test(nodes):
@@ -111,8 +111,8 @@ def treestate_tests():
     t2.deserialize(s)
     assert t.state == t2.state
 
-def test_f():
-    print('Hello from callback')
+def test_f(blah):
+    print('Hello from callback ' + str(blah))
     
 def main():
     treestate_tests()
@@ -125,11 +125,11 @@ def main():
 
     time.sleep(1)
     #nodes[0].peers.values()[0].magic = 'abcde' # corrupt outbound magic
-    nodes[0].stop()
-    nodes[1].add_callback(test_f, 0.5)
-    nodes[1].add_callback(test_f, 1.5)
-    nodes[2].add_callback(test_f, 2.0)
-    time.sleep(3)
+    #nodes[0].stop()
+    #nodes[1].add_callback(test_f, 0.5, 'a')
+    #nodes[1].add_callback(test_f, 1.5, 'b')
+    #nodes[2].add_callback(test_f, 2.0, 'c')
+    #time.sleep(5)
 
     try:
         close_nodes(nodes)
