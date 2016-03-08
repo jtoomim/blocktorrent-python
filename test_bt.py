@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import blocktorrent
-import random, traceback, time, math, simplejson
+import random, traceback, time, math, simplejson, StringIO
 node_count = 4
 
 def blockfromfile(fn):
@@ -51,11 +51,13 @@ def run_test(nodes):
     print "Getblocktemplate from RPC produced:", headerinfo
     for peer in nodes[0].peers:
         nodes[0].send_header(blk, peer)
+
+    time.sleep(0.2)
+    print "Testing send_blockstate"
+    for node in nodes:
+        for peer in node.peers:
+            node.send_blockstate(node.blockstates[blk.sha256].state, blk.sha256, peer)
     print "Attempting btmerkletree_tests(blk). This doesn't quite work yet, due to BTMerkleTree not checking cousins in addnode(...)."
-    btmerkletree_tests(blk)
-    btmerkletree_tests(blk)
-    btmerkletree_tests(blk)
-    btmerkletree_tests(blk)
     btmerkletree_tests(blk)
     print "jobs done"
 
@@ -67,19 +69,25 @@ def btmerkletree_tests(blk):
     start = time.time()
     mt = blocktorrent.bttrees.BTMerkleTree(blk.hashMerkleRoot)
     count = len(blk.vtx)
-    levels = int(math.ceil(math.log(count, 2)))
+    mt.levels = int(math.ceil(math.log(count, 2)))
+#    mt.txcounthints.append(count-1)
+#    mt.txcounthints.append(count+1)
+#    mt.txcounthints.append(count/2)
+#    mt.txcounthints.append(count/2-1)
+#    mt.txcounthints.append(count/2+1)
     mt.txcounthints.append(count)
-    for i in range(len(blk.vtx)):
-        mt.addhash(levels, i, blk.vtx[i].sha256)
+    for i in range(count):
+        mt.addhash(mt.levels, i, blk.vtx[i].sha256)
+    print 2**mt.levels, count 
     middle = time.time()
 
-    #print hex(blk.hashMerkleRoot)
     hashcount = `mt.valid`.count("['") + `mt.valid`.count('["') 
     print "Found something close to %i hashes (hackishly counted) for a block with %i transactions" % (hashcount, len(blk.vtx))
     print "Nodes still in purgatory:", mt.purgatory.keys()
-    end = time.time()
-    print "btmerkletree_tests took %3.6f ms, or %3.6f until the middle" % (1000*(end - start), 1000*(middle-start))
-    #print `mt.valid`
+    print "btmerkletree_tests took %3.6f ms" % (1000*(middle - start))
+    print "mt found txcount=%i" % mt.txcount
+    #print mt.purgatory
+    print "mt.state: \n", mt.state
 
 
 def treestate_tests():
@@ -108,7 +116,7 @@ def treestate_tests():
     t.setnode(5, 18, 3)
     s = t.serialize()
     t2 = blocktorrent.bttrees.TreeState()
-    t2.deserialize(s)
+    t2.deserialize(StringIO.StringIO(s))
     assert t.state == t2.state
 
 def test_f(blah):

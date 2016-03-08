@@ -4,13 +4,7 @@
 import config
 import lib.logs as logs
 from lib.logs import debuglog, log
-import socket
-import select
-import threading
-import urllib2
-import sys
-import binascii
-import StringIO
+import socket, select, threading, urllib2, sys, binascii, StringIO, traceback
 from lib import authproxy, mininode, merkletree, util, bttrees
 import random
 import traceback
@@ -32,6 +26,7 @@ MSG_HEADER = 'heads up!'
 MSG_MULTIPLE = 'multipass'
 MSG_ACK = 'ackk'
 MSG_CONNECT_ACK = 'doge' # basically SYN-ACK
+MSG_BLOCKSTATE = 'treestate'
 
 rpcusername = config.RPCUSERNAME
 rpcpassword = config.RPCPASSWORD
@@ -74,14 +69,6 @@ def random_string(length):
         r += chr(random.randrange(256))
     return r
 
-class BlockState:
-    def __init__(self, sha256):
-        self.sha256 = sha256
-        self.complete = False
-        self.txCount = -1 # unknown
-        self.levelCount = -1
-        self.bestLevel = 0
-        self.treeState = bttrees.TreeState()
 class UnacknowledgedMessage:
     @staticmethod
     def calculate_hash(t):
@@ -101,7 +88,7 @@ class BTPeer:
         self.hostname = hostname
         self.host = hostname + ":" + str(addr[1])
         self.addr = addr
-        self.headers = {}
+        self.inflight = {}
         self.blocks = set()
         #self.txinv = set() # we'll probably want to do this in a more efficient fashion than a set
         self.magic = random_string(MAGIC_SIZE) # outgoing magic
@@ -112,13 +99,13 @@ class BTPeer:
         self.unacknowledged = {}
     def has_header(self, sha256):
         assert type(sha256) == long
-        if sha256 in self.headers:
+        if sha256 in self.inflight:
             return 'header'
         elif sha256 in self.blocks:
             return 'block'
     def log_header(self, sha256):
         if not self.has_header(sha256):
-            self.headers[sha256] = BlockState(sha256)
+            self.inflight[sha256] = bttrees.BTMerkleTree(sha256)
     def send_message(self, t, sequence=None):
         s = chr(0)
         if sequence:
@@ -144,7 +131,6 @@ class BTPeer:
             else:
                 self.send_message(m.message, m.sequence)
                 self.client.add_callback(self.retry, RETRY_DELAY, key)
-        
 
 class BTUDPClient(threading.Thread):
     def __init__(self, udp_listen=config.BT_PORT_UDP):
@@ -385,6 +371,9 @@ class BTUDPClient(threading.Thread):
                 if t.startswith(MSG_MULTIPLE):
                     self.recv_multiple(t, addr, magic)
                 
+                if t.startswith(MSG_BLOCKSTATE):
+                    self.recv_blockstate(t, peer)
+                
                 if t.startswith(MSG_ACK):
                     self.recv_ack(t, peer)
 
@@ -392,7 +381,7 @@ class BTUDPClient(threading.Thread):
                     if magic in self.magic_map:
                         peer = self.magic_map[magic]
                         peer.send_message(MSG_ACK + UnacknowledgedMessage.calculate_hash(t) + struct.pack('<H', sequence))
-                
+
         except:
             debuglog('btnet', 'Malformed UDP message or parsing error')
             debuglog('btnet', traceback.format_exc())
@@ -408,7 +397,7 @@ class BTUDPClient(threading.Thread):
     def add_header(self, cblock):
         if not cblock.sha256 in self.blocks:
             self.blocks[cblock.sha256] = cblock
-            self.blockstates[cblock.sha256] = BlockState(cblock.sha256)
+            self.blockstates[cblock.sha256] = bttrees.BTMerkleTree(cblock.sha256)
             #self.merkles[cblock.sha256] = ...
 
     def send_header(self, cblock, peer):
@@ -438,6 +427,18 @@ class BTUDPClient(threading.Thread):
         else:
             # This can sometimes happen during simultaneous connect
             debuglog('btnet', "Received malformed ACK from %s: %s" % (peer.host, key.encode('hex')))
+
+    def recv_blockstate(self, data, peer):
+        s = StringIO.StringIO(data.split(MSG_BLOCKSTATE, 1)[1])
+        hash = util.deser_uint256(s)
+        if peer.has_header(hash) == 'header':
+            peer.inflight[hash].state.deserialize(s)
+            debuglog('btcnet', "New block state for %i: \n" % hash, peer.inflight[hash])
+
+    def send_blockstate(self, state, hash, addr, level=0, index=0):
+        assert addr in self.peers
+        msg = MSG_BLOCKSTATE + util.ser_uint256(hash) + state.serialize(level, index)
+        self.socket.sendto(msg, addr)
 
     def broadcast_header(self, cblock):
         sha = cblock.sha256
