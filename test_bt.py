@@ -38,7 +38,7 @@ def init_nodes(num_nodes):
         n.start()
         time.sleep(0.05)
         for j in range(i):
-            nodes[i].add_callback(nodes[i].connect, 0, (('localhost', ports[j])))
+            nodes[i].event_loop.add_callback(nodes[i].peer_manager.connect, 0, (('localhost', ports[j])))
     return nodes, ports
 
 def run_test(nodes):
@@ -132,7 +132,6 @@ def main():
         traceback.print_exc()
 
     time.sleep(1)
-    #nodes[0].peers.values()[0].magic = 'abcde' # corrupt outbound magic
     #nodes[0].stop()
     #nodes[1].add_callback(test_f, 0.5, 'a')
     #nodes[1].add_callback(test_f, 1.5, 'b')
