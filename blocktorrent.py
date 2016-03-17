@@ -12,15 +12,17 @@ from btnet import BTMessage
 
 logs.debuglevels.extend(['btnet', 'bttree'])
 
+rpchost = config.RPCHOST
 rpcusername = config.RPCUSERNAME
 rpcpassword = config.RPCPASSWORD
 for arg in sys.argv:
+    if arg.startswith('--host='): rpchost = arg.split('--host=')[1].strip()
     if arg.startswith('--username='): rpcusername = arg.split('--username=')[1].strip()
     if arg.startswith('--password='): rpcpassword = arg.split('--password=')[1].strip()
 
 def gbt():
     auth_handler = urllib2.HTTPBasicAuthHandler()
-    proxy = authproxy.AuthServiceProxy('http://%s:%s@localhost:8332' % (rpcusername, rpcpassword))
+    proxy = authproxy.AuthServiceProxy('http://%s:%s@%s:8332' % (rpcusername, rpcpassword, rpchost))
     return proxy.getblocktemplate()
 
 def blockfromtemplate(template):

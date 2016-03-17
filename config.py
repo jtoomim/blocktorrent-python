@@ -5,6 +5,7 @@ BT_PORT_UDP = 18334
 
 BT_NODES = [('10.0.1.2', 8334)]
 
+RPCHOST = 'localhost'
 RPCUSERNAME = ''
 RPCPASSWORD = ''
 
