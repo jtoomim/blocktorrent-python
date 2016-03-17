@@ -1,13 +1,12 @@
 #!/usr/bin/env python
 
 import blocktorrent
+from lib import util
 import random, traceback, time, math, StringIO, binascii, sys
 import json as simplejson
 node_count = 4
 
-importmode = blocktorrent.config.MODE
-for arg in sys.argv:
-    if arg.startswith('--fromfile'): importmode = 'fromfile'
+importmode = 'fromfile' if '--fromfile' in sys.argv else blocktorrent.config.MODE
 
 def blockfromfile(fn):
     with open(fn) as f:
@@ -77,6 +76,96 @@ def close_nodes(nodes):
     for node in nodes:
         node.stop()
 
+def build_random_merkle(count):
+    '''Builds merkle tree with specified number of leaf nodes. Leaf nodes
+    are random hashes. Each node in the tree is
+    a list: [hash, left_subtree, right_subtree]. Leaf
+    nodes have left_subtree == [] and right_subtree == [].
+    Return tuple: [0] contains a list of (level, index, hash) in the tree.
+    [1] contains the merkle tree.
+    '''
+    hashes = []
+    merkle = []
+    current_level = int(math.ceil(math.log(count, 2)))
+    for i in range(count):
+        h = ''
+        for j in range(32):
+            h += chr(random.randrange(256))
+        hashes.append((current_level, i, h))
+        merkle.append([h, [], []])
+    while True:
+        if len(merkle) % 2 > 0:
+            merkle.append(merkle[-1])
+        new_merkle = []
+        current_level -= 1
+        for i in range(0, len(merkle), 2):
+            parent = util.doublesha(merkle[i][0] + merkle[i + 1][0])
+            hashes.append((current_level, i / 2, parent))
+            new_merkle.append([parent, merkle[i], merkle[i + 1]])
+        merkle = new_merkle
+        if len(merkle) == 1: break
+    return (hashes, merkle[0])
+
+def compare_merkles(a, b):
+    if a[0] != b[0]:
+        return False
+    if a[1] and a[2] and b[1] and b[2]:
+        if a[1][0] == a[2][0] and b[1][0] == b[2][0]:
+            # right edge; only compare one child
+            return compare_merkles(a[1], b[1])
+        return compare_merkles(a[1], b[1]) and compare_merkles(a[2], b[2])
+    else:
+        return (a[1] == b[1]) and (a[2] == b[2])
+
+def btmerkletree_tests_random():
+    while True:
+        txcount = int(math.pow(10, random.random() * 4.5)) # uniform in log space
+        txcount = max(2, txcount) # there are some bugs with the txcount==1 case
+        txcount = min(100000, txcount)
+        hashes, merkle = build_random_merkle(txcount)
+        mt = blocktorrent.bttrees.BTMerkleTree(merkle[0])
+        mt.levels = int(math.ceil(math.log(txcount, 2)))
+        mt.txcounthints.append(txcount)
+        fill_strategy = random.randrange(4)
+        if fill_strategy == 0:
+            # Leaf nodes only, randomised
+            random.shuffle(hashes)
+            new_hashes = []
+            for h in hashes:
+                if h[0] == mt.levels:
+                    new_hashes.append(h)
+            hashes = new_hashes
+        elif fill_strategy == 1:
+            # Everything, randomised
+            random.shuffle(hashes)
+        elif fill_strategy == 2:
+            # Everything, top down, in order
+            hashes.sort()
+        else:
+            # Top down, with some levels missing, in random order
+            # This approximates the actual fill strategy that we will
+            # use.
+            levels = {}
+            for i in range(mt.levels + 1):
+                levels[i] = []
+            for h in hashes:
+                levels[h[0]].append(h)
+            hashes = []
+            for i in range(mt.levels + 1):
+                if (random.random() < 0.8) and (i < mt.levels):
+                    levels[i] = []
+                else:
+                    random.shuffle(levels[i])
+                    hashes.extend(levels[i])
+        for h in hashes:
+            #print h[0], h[1]
+            if not mt.getnode(h[0], h[1]): # avoid "already validated in tree" warnings
+                mt.addhash(h[0], h[1], h[2])
+        is_okay = compare_merkles(merkle, mt.valid) # reconstructed merkle tree should match input
+        is_okay = is_okay and (len(mt.purgatory) == 0) # should have no keys in purgatory
+        is_okay = is_okay and (str(mt.state) == "2") # entire tree should be validated
+        print("txcount: " + str(txcount) + " strat: " + str(fill_strategy) + " okay: " + str(is_okay))
+
 def btmerkletree_tests(blk):
     start = time.time()
     mt = blocktorrent.bttrees.BTMerkleTree(blk.hashMerkleRoot)
@@ -135,6 +224,10 @@ def test_f(blah):
     
 def main():
     treestate_tests()
+    random.seed(42) # make it deterministic
+    if "--random-merkle" in sys.argv:
+        btmerkletree_tests_random()
+        return
 
     try:
         nodes, ports = init_nodes(node_count)

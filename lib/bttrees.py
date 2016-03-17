@@ -193,7 +193,7 @@ class TreeState:
         while L > 0:
             v = s[0]
             if v > value: # this can probably happen from out-of-order packets. Remove later.
-                debuglog('bttree', 'Debug warning: Parent is more complete than descendants')
+                debuglog('bttree', 'Debug warning: Parent is more complete than decendants %i %i' % (L, i))
                 return
             elif v == value and v != 1:
                 break
@@ -382,13 +382,12 @@ class BTMerkleTree:
     def upgradestate(self, level, index, edge=False):
         # fixme: do we have the tx itself?
         # fixme: is this the right edge?
-        if self.levels and level == self.levels:
-            self.state.setnode(level, index, 2)
+        if ((self.levels and (level == self.levels)) or 
+            (edge and ((index & 1) == 1))):
+            newstate = 2
         else:
-            self.state.setnode(level, index, 1)
-        if edge:
-            for i in range(index, 2**level):
-                self.state.setnode(level, i, 2)
+            newstate = 1
+        self.state.setnode(level, index, newstate)
 
     def setnode(self, level, index, hash, edge=False):
         """
@@ -482,7 +481,8 @@ class BTMerkleTree:
             if hash == sib and level == self.levels: # right edge, bottom row
                 self.txcount = index|1-1 # left sib's index
             # the recursive caller of addhash will take care of the children of key, but not siblingkey
-            self.checkchildren(siblingkey[0], siblingkey[1])
+            if hash != sib:
+                self.checkchildren(siblingkey[0], siblingkey[1])
         elif result == 'invalid':
             if sib == hash: # invalid hint about the number of transactions
                 debuglog('btnet', 'Invalid txcount hint: %i among ' % hint, self.txcounthints)
@@ -522,22 +522,25 @@ class BTMerkleTree:
                         if keys[i][0] > height: continue
                         edge = (hint-1) >> (height - keys[i][0])
                         if index*2 == edge:
-                            print "found edge at ", keys[[i]]
+                            #print "found edge at ", keys[i]
                             hashes[i] = hashes[1] # this can be overwritten later
                             break
-
-
-                else:
-                    if level <= int(math.ceil(math.log(max(self.txcounthints), 2))) and index <= max(self.txcounthints):
-                        debuglog('bttree', "Couldn't find hash for %i %i when checking %i %i" % (k[0], k[1], key[0], key[1]))
+                if not hashes[i]:
+                    # One of the child keys is not available; abort validation.
+                    # This can occur if intermediate hashes have been added
+                    # via. addhash(), and not all descendants of that
+                    # intermediate hash have been added.
                     return
+
         if self.calcparent(hashes[1], hashes[2]) == hashes[0]:
             if hashes[1] == hashes[2] and level == self.levels: # right edge, bottom row
                 self.txcount = index|1-1 # left sib's index
+            is_edge = hashes[1]==hashes[2]
             for i in range(1,3):
-                self.setnode(keys[i][0], keys[i][1], hashes[i], edge=(hashes[1]==hashes[2]))
+                self.setnode(keys[i][0], keys[i][1], hashes[i], edge=is_edge)
                 del self.purgatory[keys[i]]
-                self.checkchildren(keys[i][0], keys[i][1])
+                if not is_edge or i < 3:
+                    self.checkchildren(keys[i][0], keys[i][1])
         else:
             debuglog('bttree', "Invalid descendants encountered in checkchildren. This should not happen. Keys: ", keys)
 
