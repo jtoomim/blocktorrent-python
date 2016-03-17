@@ -203,9 +203,9 @@ class BTUDPClient(threading.Thread):
         blk.calc_sha256()
         self.add_header(blk)
         if not peer.has_header(blk.sha256):
-            debuglog('btcnet', "Received header from %s: %s" % (peer.host, repr(blk)))
+            debuglog('btcnet', "Received header from %s: %s" % (peer, repr(blk)))
         else:
-            debuglog('btcnet', "Received duplicate header from %s: %i" % (peer.host, hex(blk.sha256)[2:]))
+            debuglog('btcnet', "Received duplicate header from %s: %s" % (peer, hex(blk.sha256)[2:]))
         peer.log_header(blk.sha256)
         self.broadcast_header(blk)
     

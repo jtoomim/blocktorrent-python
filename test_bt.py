@@ -49,13 +49,13 @@ def run_test(nodes):
     headerinfo = `blk`
     headerinfo = headerinfo.split('vtx=[')[0] + 'vtx[...])'
     print "Getblocktemplate from RPC produced:", headerinfo
-    for peer in nodes[0].peers:
+    for peer in nodes[0].peers.values():
         nodes[0].send_header(blk, peer)
 
     time.sleep(0.2)
     print "Testing send_blockstate"
     for node in nodes:
-        for peer in node.peers:
+        for peer in node.peers.values():
             node.send_blockstate(node.blockstates[blk.sha256].state, blk.sha256, peer)
     print "Attempting btmerkletree_tests(blk). This doesn't quite work yet, due to BTMerkleTree not checking cousins in addnode(...)."
     btmerkletree_tests(blk)
