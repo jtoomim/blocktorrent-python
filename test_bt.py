@@ -37,8 +37,8 @@ def init_nodes(num_nodes):
         nodes.append(n)
         n.start()
         time.sleep(0.05)
-        if not i==0:
-            n.addnode(('localhost', ports[i-1]))
+        for j in range(i):
+            nodes[i].event_loop.add_callback(nodes[i].peer_manager.connect, 0, (('localhost', ports[j])))
     return nodes, ports
 
 def run_test(nodes):
@@ -49,13 +49,13 @@ def run_test(nodes):
     headerinfo = `blk`
     headerinfo = headerinfo.split('vtx=[')[0] + 'vtx[...])'
     print "Getblocktemplate from RPC produced:", headerinfo
-    for peer in nodes[0].peers:
+    for peer in nodes[0].peers.values():
         nodes[0].send_header(blk, peer)
 
     time.sleep(0.2)
     print "Testing send_blockstate"
     for node in nodes:
-        for peer in node.peers:
+        for peer in node.peers.values():
             node.send_blockstate(node.blockstates[blk.sha256].state, blk.sha256, peer)
     print "Attempting btmerkletree_tests(blk). This doesn't quite work yet, due to BTMerkleTree not checking cousins in addnode(...)."
     btmerkletree_tests(blk)
@@ -119,6 +119,9 @@ def treestate_tests():
     t2.deserialize(StringIO.StringIO(s))
     assert t.state == t2.state
 
+def test_f(blah):
+    print('Hello from callback ' + str(blah))
+    
 def main():
     treestate_tests()
 
@@ -129,6 +132,11 @@ def main():
         traceback.print_exc()
 
     time.sleep(1)
+    #nodes[0].stop()
+    #nodes[1].add_callback(test_f, 0.5, 'a')
+    #nodes[1].add_callback(test_f, 1.5, 'b')
+    #nodes[2].add_callback(test_f, 2.0, 'c')
+    #time.sleep(5)
 
     try:
         close_nodes(nodes)
