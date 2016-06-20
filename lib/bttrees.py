@@ -1,4 +1,4 @@
-import math, binascii
+import math, binascii, random
 from hashlib import sha256
 
 import config, util
@@ -31,6 +31,14 @@ def splitrun(level, start, length, hashes):
         i += 2**LSB
     return runs
 
+def hasdescendants(subtree, generations):
+    assert len(subtree)
+    if generations <= 0 or subtree[0] in (2, 3):
+        return subtree[0]
+    else:
+        assert len(subtree) == 3
+        return min(hasdescendants(subtree[1], generations-1), hasdescendants(subtree[2], generations-1))
+
 class TreeState:
     MISSING = 0
     HASH = 1
@@ -50,7 +58,7 @@ class TreeState:
         nodestate can have one of four values:
 
         0 (MISSING): The peer does not have any information about the corresponding
-        node in the merkle tree or its decendants. This node will be a leaf
+        node in the merkle tree or its descendants. This node will be a leaf
         in the TreeState structure, but not necessarily a leaf in the actual
         merkle tree.
 
@@ -58,12 +66,12 @@ class TreeState:
         may or may not have any children's hashes. This tree node will have children.
 
         2 (ALLHASH): The peer has the hash for the corresponding merkle node, and
-        the hashes for all decendants of this node, up to the transaction
+        the hashes for all descendants of this node, up to the transaction
         hashes themselves. The peer is not known to have the actual
         transactions.
 
-        3 (ALLTX): The peer has the hash for this node and all decendants, and has
-        the transactions themselves for all decendants.
+        3 (ALLTX): The peer has the hash for this node and all descendants, and has
+        the transactions themselves for all descendants.
 
         If nodestate == 1, then the node entry must include children.
         If nodestate != 1, then the node entry must not include children.
@@ -88,13 +96,13 @@ class TreeState:
         assert level >= 0
 
         # Algorithm: we walk the tree until we either get to the target
-        # or reach a node that speaks for all its decendants
+        # or reach a node that speaks for all its descendants
 
         i = index # of subtree
         L = level # of subtree
         s = self.state # the subtree
         while 1:
-            if s[0] in [0, 2, 3] or L==0: # if this node speaks for its decendants or is the target
+            if s[0] in [0, 2, 3] or L==0: # if this node speaks for its descendants or is the target
                 return s[0]
             L -= 1
             s = s[1 + ((i>>L)%2)] # take the left or right subtree
@@ -102,13 +110,13 @@ class TreeState:
 
     def fetchsubtree(self, level, index):
         """
-        Fetches a subtree. Returns [] if the subtree is not present.
+        Fetches a subtree. Returns None if the subtree is not present.
         """
         assert index < 2**level
         assert level >= 0
 
         # Algorithm: we walk the tree until we either get to the target
-        # or reach a node that speaks for all its decendants
+        # or reach a node that speaks for all its descendants
 
         i = index # of working subtree
         L = level # of working subtree
@@ -116,18 +124,52 @@ class TreeState:
         while 1:
             if L==0:
                 return s
-            if s[0] in [0, 2, 3]: # if this node speaks for its decendants or is the target
-                return []
+            if s[0] in [0, 2, 3]: # if this node speaks for its descendants or is the target
+                return None
             L -= 1
             s = s[1 + ((i>>L)%2)] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
+
+    def randmissingfrom(self, superset, generations=0):
+        """
+        Finds a node that is present (1, 2, 3) with descendants in superset but missing (0) 
+        in self.state.
+        """
+        if not type(superset) == list:
+            superset = superset.state
+        def helper(a, b, level, index, gen):
+            assert len(a) and len(b)
+
+            #base cases
+            if a[0] in (2, 3):
+                return None
+            elif b[0] == 0:
+                return None
+            elif a[0] == 0:
+                if hasdescendants(b, gen):
+                    return level, index
+                else: 
+                    return None
+            
+            #recursive cases
+            assert len(a) == 3
+            j = random.randint(0,1)
+            for i in (j, j^1): # (0, 1) in random order
+                if b[0] in (2, 3):
+                    res = helper(a[i+1], b, level+1, 2*index+i, gen-1)
+                else:
+                    res = helper(a[i+1], b[i+1], level+1, 2*index+i, gen-1)
+                if res: return res
+            return None
+
+        return helper(self.state, superset, 0, 0, generations)
 
     def setnode(self, level, index, value):
         """
         Sets the state of a node of the tree, specified by its level, index, and
         new value. Creates and destroys nodes as needed to ensure that the TreeState
         node population rules are preserved. For example, setting an internal node to
-        a value of 2 will remove all its decendants from the tree (even if they have
+        a value of 2 will remove all its descendants from the tree (even if they have
         a value of 3 -- careful!).
         """
         assert index < 2**level
@@ -151,7 +193,7 @@ class TreeState:
         while L > 0:
             v = s[0]
             if v > value: # this can probably happen from out-of-order packets. Remove later.
-                debuglog('bttree', 'Debug warning: Parent is more complete than decendants')
+                debuglog('bttree', 'Debug warning: Parent is more complete than descendants')
                 return
             elif v == value and v != 1:
                 break
@@ -378,7 +420,7 @@ class BTMerkleTree:
         unvalidated cache, self.purgatory. This will also add any computed parent
         hashes recursively. If the hash makes it into the validated tree, this
         will also check the nephews of this hash to see if they can now be
-        validated. However, direct descendents will not be checked, and must be
+        validated. However, direct descendants will not be checked, and must be
         checked by the caller.
         """
         if type(hash) == long:
@@ -422,10 +464,10 @@ class BTMerkleTree:
                 result = 'connected'
             elif parent and parent != parenthash and not sib == hash:
                 debuglog('btnet', 'Invalid hash(es) encountered when checking (%i, %i): %s.' % (level, index, to_hex(hash)))
-                debuglog('btnet', 'Parent (%i, %i) = %s not %s' %  (level-1, index//2, to_hex(parent), to_hex(parenthash)))
+                debuglog('btnet', 'Parent (%i, %i) = %s not %s' % (level-1, index//2, to_hex(parent), to_hex(parenthash)))
                 result = 'invalid'
             elif parent and parent != parenthash and sib == hash:
-                debuglog('btnet', 'Found a bad edge: (%i, %i) = %s not %s' %  (level-1, index//2, to_hex(parent), to_hex(parenthash)))
+                debuglog('btnet', 'Found a bad edge: (%i, %i) = %s not %s' % (level-1, index//2, to_hex(parent), to_hex(parenthash)))
                 result = 'orphan' # incorrect tx count hint
             else: # recurse one level up
                 result = self.addhash(level-1, index//2, parenthash, None)
@@ -449,7 +491,7 @@ class BTMerkleTree:
             else:
                 for k in key, siblingkey:
                     # fixme: for multi-level recursion, there's a good chance we're deleting the wrong txes.
-                    # should we delete all of the decendants of the lowest valid hash to which this resolves?
+                    # should we delete all of the descendants of the lowest valid hash to which this resolves?
                     # or should we leave these hashes all in purgatory? or what? who do we ban?
                     debuglog('btnet', 'Invalid hash(es) encountered. Deleting: (%i, %i): %s.' % (k[0], k[1], to_hex(self.purgatory[k])))
                     #del self.purgatory[k]
@@ -459,7 +501,7 @@ class BTMerkleTree:
 
     def checkchildren(self, level, index):
         """
-        Recursively checks the descendents of a node to see if they can be
+        Recursively checks the descendants of a node to see if they can be
         validated.
         """
         # fixme: there's a lot of duplicate code between this and addhash
@@ -497,7 +539,7 @@ class BTMerkleTree:
                 del self.purgatory[keys[i]]
                 self.checkchildren(keys[i][0], keys[i][1])
         else:
-            debuglog('bttree', "Invalid descendents encountered in checkchildren. This should not happen. Keys: ", keys)
+            debuglog('bttree', "Invalid descendants encountered in checkchildren. This should not happen. Keys: ", keys)
 
     def calcparent(self, hash1, hash2):
         if type(hash1) == long:

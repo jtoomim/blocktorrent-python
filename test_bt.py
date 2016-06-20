@@ -78,10 +78,10 @@ def btmerkletree_tests(blk):
     mt.txcounthints.append(count)
     for i in range(count):
         mt.addhash(mt.levels, i, blk.vtx[i].sha256)
-    print 2**mt.levels, count 
+    print 2**mt.levels, count
     middle = time.time()
 
-    hashcount = `mt.valid`.count("['") + `mt.valid`.count('["') 
+    hashcount = `mt.valid`.count("['") + `mt.valid`.count('["')
     print "Found something close to %i hashes (hackishly counted) for a block with %i transactions" % (hashcount, len(blk.vtx))
     print "Nodes still in purgatory:", mt.purgatory.keys()
     print "btmerkletree_tests took %3.6f ms" % (1000*(middle - start))
