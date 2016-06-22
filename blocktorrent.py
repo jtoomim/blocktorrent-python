@@ -5,7 +5,7 @@ import config
 import lib.logs as logs
 from lib.logs import debuglog, log
 import socket, select, threading, urllib2, sys, binascii, StringIO, traceback
-from lib import authproxy, mininode, merkletree, util, bttrees
+from lib import authproxy, mininode, util, bttrees
 import traceback
 import btnet
 from btnet import BTMessage
