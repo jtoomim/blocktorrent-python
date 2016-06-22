@@ -1,22 +1,28 @@
 #!/usr/bin/env python
 
+import config
 import blocktorrent
-import random, traceback, time, math, simplejson, StringIO
+import random, traceback, time, math, StringIO, binascii, sys
+import json as simplejson
+from lib import mininode
 node_count = 4
 
+importmode = config.MODE
+for arg in sys.argv:
+    if arg.startswith('--fromfile'): importmode = 'fromfile'
+
 def blockfromfile(fn):
-    # not sure if this works yet
     with open(fn) as f:
         template = simplejson.loads(f.read())
     block = blocktorrent.mininode.CBlock()
     block.nVersion = template['version']
     block.hashPrevBlock = int(template['previousblockhash'], 16)
-    block.nTime = template['time']
+    block.nTime = template['curtime']
     block.nBits = int(template['bits'], 16)
-    block.nNonce = template['nonce']
+    block.nNonce = int(template['noncerange'], 16)
     vtx = []
     btx = []
-    for tx in template['tx']:
+    for tx in template['transactions']:
         btx.append(binascii.unhexlify(tx['data']))
         ctx = mininode.CTransaction()
         ctx.deserialize(StringIO.StringIO(btx[-1]))
@@ -26,6 +32,7 @@ def blockfromfile(fn):
     block.vtx = vtx
     block.calc_merkle_root()
     block.calc_sha256()
+    print "RETURNING BLOCK"
     return block
 
 
@@ -45,7 +52,14 @@ def run_test(nodes):
     if not blocktorrent.rpcusername or not blocktorrent.rpcpassword:
         print "No username or password has been set for the RPC client. Quitting..."
         return
-    blk = blocktorrent.blockfromtemplate(blocktorrent.gbt())
+
+    if importmode == 'fromfile':
+        print "Importing block from file"
+        blk = blockfromfile('blocktemplatefrom20160620')
+    else:
+        print "Importing block from template"
+        blk = blocktorrent.blockfromtemplate(blocktorrent.gbt())
+    
     headerinfo = `blk`
     headerinfo = headerinfo.split('vtx=[')[0] + 'vtx[...])'
     print "Getblocktemplate from RPC produced:", headerinfo
@@ -146,3 +160,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
