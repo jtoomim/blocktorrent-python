@@ -1,13 +1,11 @@
 #!/usr/bin/env python
 
-import config
 import blocktorrent
 import random, traceback, time, math, StringIO, binascii, sys
 import json as simplejson
-from lib import mininode
 node_count = 4
 
-importmode = config.MODE
+importmode = blocktorrent.config.MODE
 for arg in sys.argv:
     if arg.startswith('--fromfile'): importmode = 'fromfile'
 
@@ -24,13 +22,13 @@ def blockfromfile(fn):
     btx = []
     for tx in template['transactions']:
         btx.append(binascii.unhexlify(tx['data']))
-        ctx = mininode.CTransaction()
+        ctx = blocktorrent.mininode.CTransaction()
         ctx.deserialize(StringIO.StringIO(btx[-1]))
         ctx.calc_sha256()
         vtx.append(ctx)
         assert ctx.sha256 == int(tx['hash'], 16)
     block.vtx = vtx
-    block.calc_merkle_root()
+    block.hashMerkleRoot = block.calc_merkle_root()
     block.calc_sha256()
     print "RETURNING BLOCK"
     return block
@@ -94,7 +92,6 @@ def btmerkletree_tests(blk):
         mt.addhash(mt.levels, i, blk.vtx[i].sha256)
     print 2**mt.levels, count
     middle = time.time()
-
     hashcount = `mt.valid`.count("['") + `mt.valid`.count('["')
     print "Found something close to %i hashes (hackishly counted) for a block with %i transactions" % (hashcount, len(blk.vtx))
     print "Nodes still in purgatory:", mt.purgatory.keys()
