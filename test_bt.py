@@ -1,13 +1,11 @@
 #!/usr/bin/env python
 
-import config
 import blocktorrent
 import random, traceback, time, math, StringIO, binascii, sys
 import json as simplejson
-from lib import mininode
 node_count = 4
 
-importmode = config.MODE
+importmode = blocktorrent.config.MODE
 for arg in sys.argv:
     if arg.startswith('--fromfile'): importmode = 'fromfile'
 
@@ -24,7 +22,7 @@ def blockfromfile(fn):
     btx = []
     for tx in template['transactions']:
         btx.append(binascii.unhexlify(tx['data']))
-        ctx = mininode.CTransaction()
+        ctx = blocktorrent.mininode.CTransaction()
         ctx.deserialize(StringIO.StringIO(btx[-1]))
         ctx.calc_sha256()
         vtx.append(ctx)
