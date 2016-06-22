@@ -82,20 +82,16 @@ def btmerkletree_tests(blk):
     mt = blocktorrent.bttrees.BTMerkleTree(blk.hashMerkleRoot)
     count = len(blk.vtx)
     mt.levels = int(math.ceil(math.log(count, 2)))
-    print "mt.levels", mt.levels
 #    mt.txcounthints.append(count-1)
 #    mt.txcounthints.append(count+1)
 #    mt.txcounthints.append(count/2)
 #    mt.txcounthints.append(count/2-1)
 #    mt.txcounthints.append(count/2+1)
-    print `mt.valid`
     mt.txcounthints.append(count)
     for i in range(count):
         mt.addhash(mt.levels, i, blk.vtx[i].sha256)
     print 2**mt.levels, count
     middle = time.time()
-
-    # counting items in nested list repr(mt.valid)
     hashcount = `mt.valid`.count("['") + `mt.valid`.count('["')
     print "Found something close to %i hashes (hackishly counted) for a block with %i transactions" % (hashcount, len(blk.vtx))
     print "Nodes still in purgatory:", mt.purgatory.keys()
