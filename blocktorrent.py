@@ -79,7 +79,6 @@ class BTUDPClient(threading.Thread):
         threading.Thread.__init__(self)
         self.udp_listen = udp_listen
         self.blocks = {}
-        self.blockstates = {}
         self.merkles = {}
         self.event_loop = btnet.BTEventLoop(self.handle_read, self.handle_close)
         self.peer_manager = btnet.BTPeerManager(self.event_loop, self)
@@ -168,6 +167,9 @@ class BTUDPClient(threading.Thread):
                 if m.payload.startswith(BTMessage.MSG_ACK):
                     self.recv_ack(m, peer)
 
+                if m.payload.startswith(BTMessage.MSG_REQUEST_NODES):
+                    self.recv_node_request(m.payload, peer)
+
                 if m.sequence:
                     if (m.magic, addr) in self.magic_map:
                         peer = self.magic_map[(m.magic, addr)]
@@ -188,8 +190,7 @@ class BTUDPClient(threading.Thread):
     def add_header(self, cblock):
         if not cblock.sha256 in self.blocks:
             self.blocks[cblock.sha256] = cblock
-            self.blockstates[cblock.sha256] = bttrees.BTMerkleTree(cblock.sha256)
-            #self.merkles[cblock.sha256] = ...
+            self.merkles[cblock.sha256] = bttrees.BTMerkleTree(cblock.hashMerkleRoot)
 
     def send_header(self, cblock, peer):
         peer.log_header(cblock.sha256)
@@ -232,3 +233,16 @@ class BTUDPClient(threading.Thread):
             if not peer.has_header(sha):
                 self.send_header(cblock, peer)
 
+    def send_node_request(self, peer, hash, level, index, generations):
+        assert level < 253 and generations < 253 and index < 2**level and index < 2**30
+        msg = BTMessage.MSG_REQUEST_NODES + util.ser_uint256(hash) + chr(level) + util.ser_varint(index) + chr(generations)
+        print "sending message %s to peer %s" % (msg.encode('hex'), str(peer))
+        peer.send_message(msg)
+
+    def recv_node_request(self, data, peer):
+        s = StringIO.StringIO(data.split(BTMessage.MSG_REQUEST_NODES)[1])
+        hash = util.deser_uint256(s)
+        level = ord(s.read(1))
+        index = util.deser_varint(s)
+        generations = ord(s.read(1))
+        print "peer", peer, "wants h=%s l=%i i=%i g=%i" % (util.ser_uint256(hash)[::-1].encode('hex'), level, index, generations)

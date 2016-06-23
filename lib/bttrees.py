@@ -397,6 +397,10 @@ class BTMerkleTree:
         assert index < 2**level
         assert level >= 0
         assert level <= config.MAX_DEPTH
+
+        #statecode = 3 if hash in mempool else 2 if level == self.levels else 1
+        statecode = 2 if level == self.levels else 1
+        self.state.setnode(level, index, statecode)
         i = index # of subtree
         L = level # of subtree
         s = self.valid # the subtree
