@@ -54,6 +54,7 @@ class BTPeer:
         self.incoming_magic = incoming_magic
         self.inflight = {}
         self.blocks = set()
+        self.MTU = 1472 # fixme: do MTU path discovery for this
         #self.txinv = set() # we'll probably want to do this in a more efficient fashion than a set
     def __str__(self):
         return self.low_level_peer.__str__()
@@ -170,6 +171,15 @@ class BTUDPClient(threading.Thread):
                 if m.payload.startswith(BTMessage.MSG_REQUEST_NODES):
                     self.recv_node_request(m.payload, peer)
 
+                if m.payload.startswith(BTMessage.MSG_RUN):
+                    self.recv_nodes(m.payload, peer)
+
+                if m.payload.startswith(BTMessage.MSG_MISSING_BLOCK):
+                    debuglog('btnet', "MSG_MISSING_BLOCK received, but we can't parse it yet. Payload: %s" % m.payload)
+
+                if m.payload.startswith(BTMessage.MSG_MISSING_NODES):
+                    debuglog('btnet', "MSG_MISSING_NODES received, but we can't parse it yet. Payload: %s" % m.payload)
+
                 if m.sequence:
                     if (m.magic, addr) in self.magic_map:
                         peer = self.magic_map[(m.magic, addr)]
@@ -206,9 +216,9 @@ class BTUDPClient(threading.Thread):
         blk.calc_sha256()
         self.add_header(blk)
         if not peer.has_header(blk.sha256):
-            debuglog('btcnet', "Received header from %s: %s" % (peer, repr(blk)))
+            debuglog('btnet', "Received header from %s: %s" % (peer, repr(blk)))
         else:
-            debuglog('btcnet', "Received duplicate header from %s: %s" % (peer, hex(blk.sha256)[2:]))
+            debuglog('btnet', "Received duplicate header from %s: %s" % (peer, hex(blk.sha256)[2:]))
         peer.log_header(blk.sha256)
         self.broadcast_header(blk)
     
@@ -220,11 +230,11 @@ class BTUDPClient(threading.Thread):
         hash = util.deser_uint256(s)
         if peer.has_header(hash) == 'header':
             peer.inflight[hash].state.deserialize(s)
-            debuglog('btcnet', "New block state for %i: \n" % hash, peer.inflight[hash])
+            debuglog('btnet', "New block state for %i: \n" % hash, peer.inflight[hash])
 
-    def send_blockstate(self, state, hash, peer, level=0, index=0):
+    def send_blockstate(self, state, sha256, peer, level=0, index=0):
         assert peer in self.peers.values()
-        msg = BTMessage.MSG_BLOCKSTATE + util.ser_uint256(hash) + state.serialize(level, index)
+        msg = BTMessage.MSG_BLOCKSTATE + util.ser_uint256(sha256) + state.serialize(level, index)
         peer.send_message(msg)
 
     def broadcast_header(self, cblock):
@@ -233,16 +243,63 @@ class BTUDPClient(threading.Thread):
             if not peer.has_header(sha):
                 self.send_header(cblock, peer)
 
-    def send_node_request(self, peer, hash, level, index, generations):
+    def send_node_request(self, peer, sha256, level, index, generations, complete=0):
         assert level < 253 and generations < 253 and index < 2**level and index < 2**30
-        msg = BTMessage.MSG_REQUEST_NODES + util.ser_uint256(hash) + chr(level) + util.ser_varint(index) + chr(generations)
+        flags = 0
+        if complete: flags |= 1
+        msg = BTMessage.MSG_REQUEST_NODES + util.ser_uint256(sha256) + chr(level) + util.ser_varint(index) + chr(generations) + util.ser_varint(flags)
         print "sending message %s to peer %s" % (msg.encode('hex'), str(peer))
         peer.send_message(msg)
 
     def recv_node_request(self, data, peer):
         s = StringIO.StringIO(data.split(BTMessage.MSG_REQUEST_NODES)[1])
-        hash = util.deser_uint256(s)
+        sha256 = util.deser_uint256(s)
         level = ord(s.read(1))
         index = util.deser_varint(s)
         generations = ord(s.read(1))
-        print "peer", peer, "wants h=%s l=%i i=%i g=%i" % (util.ser_uint256(hash)[::-1].encode('hex'), level, index, generations)
+        flags = util.deser_varint(s)
+        debuglog('btnet', "peer %s wants h=%s l=%i i=%i g=%i f=%i" % (str(peer), util.ser_uint256(sha256)[::-1].encode('hex'), level, index, generations, flags))
+        # fixme: maybe add choke/throttle checks here?
+        self.send_nodes(peer, sha256, level, index, generations, flags)
+
+    def send_nodes(self, peer, sha256, level, index, generations, flags):
+        if not sha256 in self.merkles:
+            debuglog('btnet', 'peer %s wants a block that we don\'t know about: %s' % (str(peer), util.ser_uint256(sha256)[::-1].encode('hex')))
+            peer.send_message(BTMessage.MSG_MISSING_BLOCK + util.ser_uint256(sha256) + chr(level) + util.ser_varint(index) + chr(generations))
+            return
+        if not self.merkles[sha256].state.hasdescendants(level, index, generations):
+            debuglog('btnet', 'peer %s wants nodes that we don\'t know about: l=%i i=%i g=%i h=%s' % (str(peer), leve, index, generations, util.ser_uint256(sha256)[::-1].encode('hex')))
+            peer.send_message(BTMessage.MSG_MISSING_NODES + util.ser_uint256(sha256) + chr(level) + util.ser_varint(index) + chr(generations))
+            return
+        run = self.merkles[sha256].getrun(level, index, generations)
+        assert type(run[0]) == str and len(run[0]) == 32 # Just checking to make sure that merkles stores the serialized str version of the hash, since I forgot
+
+        flags = 0
+        if flags: raise NotImplementedError
+        msg = BTMessage.MSG_RUN + util.ser_uint256(sha256) + chr(level) + util.ser_varint(index) + chr(generations) + util.ser_varint(len(run)) + util.ser_varint(flags) + ''.join(run)
+        if len(msg) > peer.MTU:
+            debuglog('btnet', 'MSG_RUN has length %i which exceeds peer %s\'s max MTU of %i' % (len(msg), str(peer), self.peers[peer].MTU))
+        peer.send_message(msg)
+
+    def recv_nodes(self, data, peer):
+        s = StringIO.StringIO(data.split(BTMessage.MSG_RUN)[1])
+        sha256 = util.deser_uint256(s)
+        level = ord(s.read(1))
+        index = util.deser_varint(s)
+        generations = ord(s.read(1))
+        length = util.deser_varint(s)
+        flags = util.deser_varint(s)
+        if flags: raise NotImplementedError
+        #fixme: the next line will fail on the right edge of the merkle tree
+        run = [s.read(32) for i in range(length)]
+        for i in range(length):
+            # fixme: BTMerkleTree should have a method for batched
+            self.merkles[sha256].addhash(level+generations, index+i, run[i])
+        #fixme: right edge isn't handled here properly
+        if self.merkles[sha256].getnode(level, index):
+            print "Successfully added from peer=%s: l=%i i=%i g=%i L=%i h=%s" % (str(peer), level, index, generations, length, util.ser_uint256(sha256)[::-1].encode('hex'))
+            debuglog('btnet', "Successfully added from peer=%s: l=%i i=%i g=%i L=%i h=%s" % (str(peer), level, index, generations, length, util.ser_uint256(sha256)[::-1].encode('hex')))
+        else:
+            print "Failed to add from peer=%s: l=%i i=%i g=%i h=%s" % (str(peer), level, index, generations, util.ser_uint256(sha256)[::-1].encode('hex'))
+            debuglog('btnet', "Failed to add from peer=%s: l=%i i=%i g=%i h=%s" % (str(peer), level, index, generations, util.ser_uint256(sha256)[::-1].encode('hex')))
+

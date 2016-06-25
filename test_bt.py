@@ -82,6 +82,12 @@ def run_test(nodes):
     print 'randmissingfrom: ', missing
     print 'nodes[1].peers: ', nodes[1].peers
     nodes[1].send_node_request(nodes[1].peers.values()[0], blk.sha256, missing[0], missing[1], 5)
+    time.sleep(0.1)
+    print "nodes[0] state:", nodes[0].merkles.values()[0].state
+    print "nodes[1] state:", nodes[1].merkles.values()[0].state
+    print "nodes[1] merkle:", nodes[1].merkles.values()[0].valid
+    print "nodes[1] purg:", nodes[1].merkles.values()[0].purgatory
+
 
 
     print "jobs done"
