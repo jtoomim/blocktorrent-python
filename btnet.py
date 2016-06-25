@@ -190,6 +190,8 @@ class BTMessage:
     MSG_ACK = 'ackk'
     MSG_CONNECT_ACK = 'doge' # basically SYN-ACK
     MSG_BLOCKSTATE = 'treestate'
+    MSG_REQTX = 'canihaztx?'
+    MSG_GETTX = 'tx4u'
 
     def __init__(self, payload, magic, sequence=None):
         self.payload = payload
