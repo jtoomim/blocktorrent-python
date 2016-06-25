@@ -85,6 +85,7 @@ class BTUDPClient(threading.Thread):
         self.peer_manager = btnet.BTPeerManager(self.event_loop, self)
         self.peers = {} # currently connected peers, key = (IP, port)
         self.magic_map = {} # currently connected peers, key = (magic, (IP, port))
+        self.mempool = {} # store txs
 
     def run(self):
         if not logs.logfile:
@@ -168,6 +169,18 @@ class BTUDPClient(threading.Thread):
                 if m.payload.startswith(BTMessage.MSG_ACK):
                     self.recv_ack(m, peer)
 
+                # need request_tx func. receive tx req and tx msg
+                # asking for specific tx? by txhash, or by blockhash and tx index,
+                    # or multiple tx by list of tx indices (offsets). 3 tx in row, 3tx [0,0,0]. would be bandwidth efficient
+                # need mempool for txs. dict of tx hashes to tx obj? tx obj from mininode, or other class we write on top
+                    # would want to add salted short hashes -- eventually
+                # receive req: check mempool. 
+                    # how would you check with req by offset or index? 
+                    # go into your block db, find that block, find hash that goes at that index, use that to get tx out of mempool
+                # Test: fill mempool with data from getblocktemplate, other nodes can req tx from it, they can fill their mempools, get complete blocks
+                    # although don't have logic for which parts of merkle tree to req....
+                    # write hardcoded thing that sends tx from one to another, check if its received at 2nd peer
+
                 if m.sequence:
                     if (m.magic, addr) in self.magic_map:
                         peer = self.magic_map[(m.magic, addr)]
@@ -188,7 +201,7 @@ class BTUDPClient(threading.Thread):
     def add_header(self, cblock):
         if not cblock.sha256 in self.blocks:
             self.blocks[cblock.sha256] = cblock
-            self.blockstates[cblock.sha256] = bttrees.BTMerkleTree(cblock.sha256)
+            self.blockstates[cblock.sha256] = bttrees.BTMerkleTree(cblock.hashMerkleRoot) #rename me, has actual merkle trees as value
             #self.merkles[cblock.sha256] = ...
 
     def send_header(self, cblock, peer):
