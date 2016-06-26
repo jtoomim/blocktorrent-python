@@ -1,4 +1,4 @@
-import math, binascii, random
+import math, binascii, random, traceback
 from hashlib import sha256
 
 import config, util
@@ -388,10 +388,8 @@ class BTMerkleTree:
         For efficiency, this method assumes that you've already ensured that those
         nodes are present.
         """
-        print "l=%i i=%i g=%i first hash: %i last hash: %i txcount: %i" % (level, index, generations, index*2**generations, (index+1)*2**generations-1, self.txcount)
         subtree = self.getnode(level, index, subtree=True)
         def helper(sub, gen):
-            #print gen, bool(sub[1]), bool(sub[2])
             if not sub:
                 return []
             elif gen==0:
@@ -399,6 +397,72 @@ class BTMerkleTree:
             else:
                 return helper(sub[1], gen-1) + helper(sub[2], gen-1)
         return helper(subtree, generations)
+
+    def maketxcountproof(self):
+        '''Prove the number of transactions in a block by returning all of the hashes needed to connect
+        the last transaction to the merkle root.
+        '''
+        if not self.txcount:
+            return
+        # we interpret the index of the last transaction as a binary path to that tx,
+        # where a 1 in the MSB means you take the right branch and a 0 the left
+        path = self.txcount-1
+        levels = int(math.ceil(math.log(self.txcount, 2)))
+        hashes = []
+        subtree = self.valid
+        index, level = 0,0
+        while levels > 0:
+            levels -= 1
+            level += 1
+            index *= 2
+            # if we're taking the right branch, we need to include the left branch's hash.
+            # if we're taking the left branch, the recipient will just duplicate the left branch's hash.
+            if path & 2**levels:
+                hashes.append(subtree[1][0])
+                if levels == 0: hashes.append(subtree[0])
+                subtree = subtree[2]
+                index += 1
+            else:
+                subtree = subtree[1]
+                if levels == 0: hashes.append(subtree[0])
+            path = path & (2**levels-1)
+        # and finally, the final tx itself
+        return self.txcount, hashes
+
+    def checktxcountproof(self, txcount, hashes):
+        '''Verify a txcount proof by going from the leaf to the root and calculating the hashes.'''
+
+        # Count how many levels we have to descend. We know the first step in the path is right,
+        # so if we count LSB first (reverse order of steps) then bool(path) will be true until
+        # the last step
+        levels, path = 0, txcount-1
+        while path:
+            levels += 1
+            path = path >> 1
+
+        hashes.reverse()
+        path = txcount-1
+        level = levels
+        parent = hashes.pop(0)
+
+        while level:
+            if bool(path & 1):
+                left = hashes.pop(0)
+            else:
+                left = parent
+            right = parent # no matter what
+            parent = self.calcparent(left, right)
+
+            #for debug
+            savedleft, savedright = self.getnode(level, path & 2**32-2), self.getnode(level, path | 1)
+            savedparent = self.calcparent(savedleft, savedright)
+
+            level -= 1
+            path = path >> 1
+
+        # fixme: add the checked hashes to self.valid if they connect, and return the result of the check
+        # fixme: get rid of all instances of the obsolete txcounthints
+
 
     def upgradestate(self, level, index, edge=False):
         # fixme: do we have the tx itself?
@@ -504,7 +568,7 @@ class BTMerkleTree:
             del self.purgatory[key]
             del self.purgatory[siblingkey]
             if hash == sib and level == self.levels: # right edge, bottom row
-                self.txcount = index|1-1 # left sib's index
+                self.txcount = index|1 # left sib is the last tx, but we start counting from 0, so we want the right sib's index
             # the recursive caller of addhash will take care of the children of key, but not siblingkey
             if hash != sib:
                 self.checkchildren(siblingkey[0], siblingkey[1])
@@ -559,7 +623,7 @@ class BTMerkleTree:
 
         if self.calcparent(hashes[1], hashes[2]) == hashes[0]:
             if hashes[1] == hashes[2] and level == self.levels: # right edge, bottom row
-                self.txcount = index|1-1 # left sib's index
+                self.txcount = index|1 # left sib is the last tx, but we start counting from 0, so we want the right sib's index
             is_edge = hashes[1]==hashes[2]
             for i in range(1,3):
                 self.setnode(keys[i][0], keys[i][1], hashes[i], edge=is_edge)
