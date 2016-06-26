@@ -64,9 +64,9 @@ def run_test(nodes):
 
     print "Adding txs from blk to node[0]'s txmempool..."
     for tx in blk.vtx:
-        # print "TX.hash", tx.hash # dif btwn sha256 and hash property?
+        # Use sha256 and hash property?
+        # print "TX.hash", tx.hash 
         nodes[0].txmempool[tx.hash] = tx.serialize()
-    # print "MEMPOOL:", nodes[0].txmempool
 
     print "Printing 2 txs from Node[0]'s txmempool..."
     i = 0
@@ -77,16 +77,13 @@ def run_test(nodes):
             i += 1
 
     print "Testing send_tx_req"
+    '''Node[0] has populated mempool, node[1] asks for tx from it
+       Uses hardcoded tx from Node[0] for test purposes
+    '''
     tx = '2a406f177c5907dbf62922b6b44e60ee95717a2065a989e8782531816d18b055'
-    # Node[0] has populated mempool, node[1] asks for tx from it
     for peer in nodes[1].peers.values():
         nodes[1].send_tx_req(tx, peer)
         time.sleep(0.1)
-
-    # print "Testing recv_tx"
-    # for peer in nodes[0].peers.values():
-    #     print "first blk.vtx", blk.vtx[0].hash
-    #     nodes[0].recv_tx(blk.vtx[0].hash, peer)
 
     print "Attempting btmerkletree_tests(blk)."
     btmerkletree_tests(blk, nodes[0])

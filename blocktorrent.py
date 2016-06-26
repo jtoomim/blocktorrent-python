@@ -255,19 +255,16 @@ class BTUDPClient(threading.Thread):
     # todo: in long run will have blockhash and index or indices, ie level in block ( 5th and 7th tx in block X)
     # two ways node can learn about tx, complete block from file/source or from over network. add to mempool
     def send_tx_req(self, txhash, peer):
-        print "IN send_tx_req"
         assert peer in self.peers.values()
         print "txhash in send_tx_req", txhash
         msg = BTMessage.MSG_REQUEST_TX + txhash
         peer.send_message(msg)
     
     def send_tx(self, data, peer):
-        print "IN SEND_TX"
         txhash = data.split(BTMessage.MSG_REQUEST_TX, 1)[1]
         print "txhash in SEND_TX", txhash
         for hash in self.txmempool:
             if hash == txhash:
-                print "Found TXhash in self.txmempool", txhash
                 tx = self.txmempool[hash]
                 msg = BTMessage.MSG_TX + tx
                 peer.send_message(msg)
@@ -275,7 +272,6 @@ class BTUDPClient(threading.Thread):
     # Receive txs from peers, check mempool for hash, add to block if not (identify block?)
     # TXs come through as binary blobs, use mininode CTransaction to deserialize, calc hash
     def recv_tx(self, data, peer):
-        print "IN RECEIVE_TX"
         ctx = mininode.CTransaction()
         tx = StringIO.StringIO(data.split(BTMessage.MSG_TX, 1)[1])
         mininode.CTransaction.deserialize(ctx, tx)
