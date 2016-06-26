@@ -191,7 +191,7 @@ class BTMessage:
     MSG_CONNECT_ACK = 'doge' # basically SYN-ACK
     MSG_BLOCKSTATE = 'treestate'
     MSG_REQUEST_TX = 'canihaztx?'
-    MSG_RECEIVE_TX = 'tx4u'
+    MSG_TX = 'tx4u'
     MSG_REQUEST_NODES = 'icanhaznodes'
     MSG_RUN = 'runforyourlife'
     MSG_MISSING_BLOCK = 'meiyou' # We don't have the header for the block that a peer requested parts of.

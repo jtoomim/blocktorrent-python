@@ -62,25 +62,35 @@ def run_test(nodes):
     for peer in nodes[0].peers.values():
         nodes[0].send_header(blk, peer)
 
-    print "Adding txs from blk to node[0]'s txmempool..."
+  print "Adding txs from blk to node[0]'s txmempool..."
     for tx in blk.vtx:
-        nodes[0].txmempool[tx.sha256] = tx.serialize().encode('hex')
-    # print "Node 0 txmempool...", nodes[0].txmempool
+        # print "TX.hash", tx.hash # dif btwn sha256 and hash property?
+        nodes[0].txmempool[tx.hash] = tx.serialize()
 
-    time.sleep(0.2)
-    print "Testing send_blockstate"
-    for node in nodes:
-        for peer in node.peers.values():
-            node.send_blockstate(node.merkles[blk.sha256].state, blk.sha256, peer)
-    time.sleep(0.1)
-    print "hashMerkleroot=%s, blockhash=%s" % tuple(map(lambda x: x[::-1].encode('hex_codec'), map(blocktorrent.mininode.ser_uint256, (blk.hashMerkleRoot, blk.sha256))))
-    for node in nodes:
-        print node.merkles.values()[0].valid[0][::-1].encode('hex_codec')
+    print "Printing 2 txs from Node[0]'s txmempool..."
+    i = 0
+    for tx in nodes[0].txmempool:
+        if i < 2:
+            print 'txhash', tx
+            print 'tx', nodes[0].txmempool[tx].encode('hex')
+            i += 1
 
-    print "Testing req_tx"
+    print "Testing send_tx_req"
+    # right now sending req out to all peers
+    # randtx = nodes[0].txmempool.popitem()
+    # for tx in randtx:
+    #     print 'randtx tx:', tx
+        # print 'randtx tx type:', type(tx)
+        # ctx = blocktorrent.mininode.CTransaction(randtx[1])
+        # ctx.deserialize(StringIO.StringIO(btx[-1]))
+        # ctx.calc_sha256()
+    tx = '2a406f177c5907dbf62922b6b44e60ee95717a2065a989e8782531816d18b055'
     for peer in nodes[0].peers.values():
-        print "req first tx by blk.vtx hash", blk.vtx[0].hash
-        nodes[0].req_tx(blk.vtx[0].hash, peer)
+        print "PEER", peer 
+        print "PEER type", type(peer) 
+        nodes[0].send_tx_req(tx, peer)
+    # peer = 127.0.0.1:15423
+    # nodes[0].send_tx_req(tx, peer)
 
     # print "Testing recv_tx"
     # for peer in nodes[0].peers.values():

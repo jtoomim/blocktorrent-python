@@ -252,33 +252,42 @@ class BTUDPClient(threading.Thread):
             peer.inflight[hash].state.deserialize(s)
             debuglog('btnet', "New block state for %i: \n" % hash, peer.inflight[hash])
 
-    # Request txs
-    def req_tx(self, txhash, peer):
-        print "txhash in req_tx", txhash
+   # todo: in long run will have blockhash and index or indices, ie level in block ( 5th and 7th tx in block X)
+    # two ways node can learn about tx, complete block from file/source or from over network. add to mempool
+    def send_tx_req(self, txhash, peer):
+        print "IN SEND TX REQ"
+        assert peer in self.peers.values()
+        print "txhash in send_tx_req", txhash
         msg = BTMessage.MSG_REQUEST_TX + txhash
-        for peer in self.peers.values():
-            peer.send_message(msg)
-
-    # two ways node can learn about tx, complete block from file/source or from over network
-    # take tx from either source and put in one place, mempool 
-
+        peer.send_message(msg)
+        # why is this recursing??
+    
     def send_tx(self, data, peer):
         print "data in send_tx", data
+        # how to use ctranact to calc hash of tx blob?
         txhash = StringIO.StringIO(data.split(BTMessage.MSG_REQUEST_TX, 1)[1])
+        print 'TX in send_tx', txhash
         if txhash in self.txmempool:
             tx = self.txmempool.txhash
             msg = BTMessage.MSG_RECEIVE_TX + txhash + tx
             for peer in self.peers.values():
                 peer.send_message(msg)
+        # dont need to send hash can gen from tx
 
     # Receive txs from peers, check mempool for hash, add to block if not (identify block?)
     # TXs come through as binary blobs, use mininode CTransaction to deserialize, calc hash
     def recv_tx(self, data, peer):
         print "data in recv_tx", data
-        txhash = StringIO.StringIO(data.split(BTMessage.MSG_RECEIVE_TX)[1])
-        tx = StringIO.StringIO(data.split(BTMessage.MSG_RECEIVE_TX)[2])
+        tx = StringIO.StringIO(data.split(BTMessage.MSG_TX, 1)[1])
+        tx = util.deser_uint256(tx)
+        ctx = mininode.CTransaction(tx)
+        txhash = ctx.calc_sha256()
+        print 'txhash found over the network in recv_tx', txhash
+        # calc txhash see if in mempool, or just add, zero cost to overwrite
+        # is it in the same format as stored in mempool?
         if txhash not in self.txmempool:
             self.txmempool.txhash = tx 
+
 
     def send_blockstate(self, state, sha256, peer, level=0, index=0):
         assert peer in self.peers.values()
