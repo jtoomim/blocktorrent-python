@@ -193,6 +193,9 @@ class BTUDPClient(threading.Thread):
                 if m.payload.startswith(BTMessage.MSG_RUN):
                     self.recv_nodes(m.payload, peer)
 
+                if m.payload.startswith(BTMessage.MSG_TXCOUNT_PROOF):
+                    self.recv_txcount_proof(m.payload, peer)
+
                 if m.payload.startswith(BTMessage.MSG_MISSING_BLOCK):
                     debuglog('btnet', "MSG_MISSING_BLOCK received, but we can't parse it yet. Payload: %s" % m.payload)
 
@@ -346,10 +349,16 @@ class BTUDPClient(threading.Thread):
             # fixme: BTMerkleTree should have a method for batched
             self.merkles[sha256].addhash(level+generations, index+i, run[i])
         #fixme: right edge isn't handled here properly
-        if self.merkles[sha256].getnode(level, index):
-            print "Successfully added from peer=%s: l=%i i=%i g=%i L=%i h=%s" % (str(peer), level, index, generations, length, util.ser_uint256(sha256)[::-1].encode('hex'))
+        print 'txcounthints=', self.merkles[sha256].txcounthints, self.merkles[sha256].txcount
+        if self.merkles[sha256].getnode(level, index): # this check appears to not be working as intended
+            print "Supposedly(fixme) successfully added from peer=%s: l=%i i=%i g=%i L=%i h=%s" % (str(peer), level, index, generations, length, util.ser_uint256(sha256)[::-1].encode('hex'))
             debuglog('btnet', "Successfully added from peer=%s: l=%i i=%i g=%i L=%i h=%s" % (str(peer), level, index, generations, length, util.ser_uint256(sha256)[::-1].encode('hex')))
         else:
             print "Failed to add from peer=%s: l=%i i=%i g=%i h=%s" % (str(peer), level, index, generations, util.ser_uint256(sha256)[::-1].encode('hex'))
             debuglog('btnet', "Failed to add from peer=%s: l=%i i=%i g=%i h=%s" % (str(peer), level, index, generations, util.ser_uint256(sha256)[::-1].encode('hex')))
 
+    def send_txcount_proof(self, peer, sha256):
+        pass
+    def recv_txcount_proof(self, data, peer):
+        s = StringIO.StringIO(data.split(BTMessage.MSG_LENGTH_PROOF)[1])
+        raise NotImplementedError
