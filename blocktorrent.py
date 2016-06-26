@@ -259,15 +259,16 @@ class BTUDPClient(threading.Thread):
     # two ways node can learn about tx, complete block from file/source or from over network. add to mempool
     def send_tx_req(self, txhash, peer):
         assert peer in self.peers.values()
-        print "txhash in send_tx_req", txhash
         msg = BTMessage.MSG_REQUEST_TX + txhash
+        # todo: make node stop sending requests after receiving requested tx from peer
+        print "Sending tx request for ", txhash
         peer.send_message(msg)
     
     def send_tx(self, data, peer):
         txhash = data.split(BTMessage.MSG_REQUEST_TX, 1)[1]
-        print "txhash in SEND_TX", txhash
         for hash in self.txmempool:
             if hash == txhash:
+                print "Found requested txhash in mempool, sending tx to peer: ", txhash
                 tx = self.txmempool[hash]
                 msg = BTMessage.MSG_TX + tx
                 peer.send_message(msg)
@@ -279,11 +280,11 @@ class BTUDPClient(threading.Thread):
         tx = StringIO.StringIO(data.split(BTMessage.MSG_TX, 1)[1])
         mininode.CTransaction.deserialize(ctx, tx)
         ctx.calc_sha256()
-        print 'txhash found over the network in recv_tx', ctx.hash
+        print 'Storing tx received over the network for txhash: ', ctx.hash
         if ctx.hash not in self.txmempool:
             # Store binary blob in mempool... why does output not look the same as test mempool tx blob?
             self.txmempool[ctx.hash] = ctx.serialize() 
-            print "Stored serialized tx in mempool:", self.txmempool[ctx.hash]
+            print "Tx serialized and stored in mempool:", self.txmempool[ctx.hash]
 
     def send_blockstate(self, state, sha256, peer, level=0, index=0):
         assert peer in self.peers.values()
