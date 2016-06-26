@@ -169,11 +169,11 @@ class BTUDPClient(threading.Thread):
                 if m.payload.startswith(BTMessage.MSG_ACK):
                     self.recv_ack(m, peer)
 
-                if m.payload.startswith(BTMessage.MSG_RECEIVE_TX):
+                if m.payload.startswith(BTMessage.MSG_TX):
                     self.recv_tx(m.payload, peer) # args?
                 
                 if m.payload.startswith(BTMessage.MSG_REQUEST_TX):
-                    self.req_tx(m.payload, peer) # args?
+                    self.send_tx(m.payload, peer) # args?
 
                 # need request_tx func. receive tx req and tx msg
                 # asking for specific tx? by txhash, or by blockhash and tx index,
@@ -252,42 +252,39 @@ class BTUDPClient(threading.Thread):
             peer.inflight[hash].state.deserialize(s)
             debuglog('btnet', "New block state for %i: \n" % hash, peer.inflight[hash])
 
-   # todo: in long run will have blockhash and index or indices, ie level in block ( 5th and 7th tx in block X)
+    # todo: in long run will have blockhash and index or indices, ie level in block ( 5th and 7th tx in block X)
     # two ways node can learn about tx, complete block from file/source or from over network. add to mempool
     def send_tx_req(self, txhash, peer):
-        print "IN SEND TX REQ"
+        print "IN send_tx_req"
         assert peer in self.peers.values()
         print "txhash in send_tx_req", txhash
         msg = BTMessage.MSG_REQUEST_TX + txhash
         peer.send_message(msg)
-        # why is this recursing??
     
     def send_tx(self, data, peer):
-        print "data in send_tx", data
-        # how to use ctranact to calc hash of tx blob?
-        txhash = StringIO.StringIO(data.split(BTMessage.MSG_REQUEST_TX, 1)[1])
-        print 'TX in send_tx', txhash
-        if txhash in self.txmempool:
-            tx = self.txmempool.txhash
-            msg = BTMessage.MSG_RECEIVE_TX + txhash + tx
-            for peer in self.peers.values():
+        print "IN SEND_TX"
+        txhash = data.split(BTMessage.MSG_REQUEST_TX, 1)[1]
+        print "txhash in SEND_TX", txhash
+        for hash in self.txmempool:
+            if hash == txhash:
+                print "Found TXhash in self.txmempool", txhash
+                tx = self.txmempool[hash]
+                msg = BTMessage.MSG_TX + tx
                 peer.send_message(msg)
-        # dont need to send hash can gen from tx
 
     # Receive txs from peers, check mempool for hash, add to block if not (identify block?)
     # TXs come through as binary blobs, use mininode CTransaction to deserialize, calc hash
     def recv_tx(self, data, peer):
-        print "data in recv_tx", data
+        print "IN RECEIVE_TX"
+        ctx = mininode.CTransaction()
         tx = StringIO.StringIO(data.split(BTMessage.MSG_TX, 1)[1])
-        tx = util.deser_uint256(tx)
-        ctx = mininode.CTransaction(tx)
-        txhash = ctx.calc_sha256()
-        print 'txhash found over the network in recv_tx', txhash
-        # calc txhash see if in mempool, or just add, zero cost to overwrite
-        # is it in the same format as stored in mempool?
-        if txhash not in self.txmempool:
-            self.txmempool.txhash = tx 
-
+        mininode.CTransaction.deserialize(ctx, tx)
+        ctx.calc_sha256()
+        print 'txhash found over the network in recv_tx', ctx.hash
+        if ctx.hash not in self.txmempool:
+            # Put ctx in binary blob to store in mempool... why does output not look the same as other test?
+            self.txmempool[ctx.hash] = ctx.serialize() 
+            print "Stored serialized tx in mempool:", self.txmempool[ctx.hash]
 
     def send_blockstate(self, state, sha256, peer, level=0, index=0):
         assert peer in self.peers.values()

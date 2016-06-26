@@ -62,10 +62,11 @@ def run_test(nodes):
     for peer in nodes[0].peers.values():
         nodes[0].send_header(blk, peer)
 
-  print "Adding txs from blk to node[0]'s txmempool..."
+    print "Adding txs from blk to node[0]'s txmempool..."
     for tx in blk.vtx:
         # print "TX.hash", tx.hash # dif btwn sha256 and hash property?
         nodes[0].txmempool[tx.hash] = tx.serialize()
+    # print "MEMPOOL:", nodes[0].txmempool
 
     print "Printing 2 txs from Node[0]'s txmempool..."
     i = 0
@@ -76,21 +77,11 @@ def run_test(nodes):
             i += 1
 
     print "Testing send_tx_req"
-    # right now sending req out to all peers
-    # randtx = nodes[0].txmempool.popitem()
-    # for tx in randtx:
-    #     print 'randtx tx:', tx
-        # print 'randtx tx type:', type(tx)
-        # ctx = blocktorrent.mininode.CTransaction(randtx[1])
-        # ctx.deserialize(StringIO.StringIO(btx[-1]))
-        # ctx.calc_sha256()
     tx = '2a406f177c5907dbf62922b6b44e60ee95717a2065a989e8782531816d18b055'
-    for peer in nodes[0].peers.values():
-        print "PEER", peer 
-        print "PEER type", type(peer) 
-        nodes[0].send_tx_req(tx, peer)
-    # peer = 127.0.0.1:15423
-    # nodes[0].send_tx_req(tx, peer)
+    # Node[0] has populated mempool, node[1] asks for tx from it
+    for peer in nodes[1].peers.values():
+        nodes[1].send_tx_req(tx, peer)
+        time.sleep(0.1)
 
     # print "Testing recv_tx"
     # for peer in nodes[0].peers.values():
