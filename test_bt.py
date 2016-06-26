@@ -29,7 +29,6 @@ def blockfromfile(fn):
     block.vtx = vtx
     block.hashMerkleRoot = block.calc_merkle_root()
     block.calc_sha256()
-    print "RETURNING BLOCK"
     return block
 
 
@@ -46,7 +45,7 @@ def init_nodes(num_nodes):
     return nodes, ports
 
 def run_test(nodes):
-    if not blocktorrent.rpcusername or not blocktorrent.rpcpassword:
+    if (not blocktorrent.rpcusername or not blocktorrent.rpcpassword) and not importmode == 'fromfile':
         print "No username or password has been set for the RPC client. Quitting..."
         return
 
@@ -63,13 +62,46 @@ def run_test(nodes):
     for peer in nodes[0].peers.values():
         nodes[0].send_header(blk, peer)
 
+    print "Adding txs from blk to node[0]'s txmempool..."
+    for tx in blk.vtx:
+        nodes[0].txmempool[tx.sha256] = tx.serialize().encode('hex')
+    # print "Node 0 txmempool...", nodes[0].txmempool
+
     time.sleep(0.2)
     print "Testing send_blockstate"
     for node in nodes:
         for peer in node.peers.values():
-            node.send_blockstate(node.blockstates[blk.sha256].state, blk.sha256, peer)
-    print "Attempting btmerkletree_tests(blk). This doesn't quite work yet, due to BTMerkleTree not checking cousins in addnode(...)."
-    btmerkletree_tests(blk)
+            node.send_blockstate(node.merkles[blk.sha256].state, blk.sha256, peer)
+    time.sleep(0.1)
+    print "hashMerkleroot=%s, blockhash=%s" % tuple(map(lambda x: x[::-1].encode('hex_codec'), map(blocktorrent.mininode.ser_uint256, (blk.hashMerkleRoot, blk.sha256))))
+    for node in nodes:
+        print node.merkles.values()[0].valid[0][::-1].encode('hex_codec')
+
+    print "Testing req_tx"
+    for peer in nodes[0].peers.values():
+        print "req first tx by blk.vtx hash", blk.vtx[0].hash
+        nodes[0].req_tx(blk.vtx[0].hash, peer)
+
+    # print "Testing recv_tx"
+    # for peer in nodes[0].peers.values():
+    #     print "first blk.vtx", blk.vtx[0].hash
+    #     nodes[0].recv_tx(blk.vtx[0].hash, peer)
+
+    print "Attempting btmerkletree_tests(blk)."
+    btmerkletree_tests(blk, nodes[0])
+
+    print "nodes[0] state:", nodes[0].merkles.values()[0].state
+    print "nodes[1] state:", nodes[1].merkles.values()[0].state
+    missing = nodes[1].merkles.values()[0].state.randmissingfrom(nodes[0].merkles.values()[0].state, generations=5)
+    print 'randmissingfrom: ', missing
+    print 'nodes[1].peers: ', nodes[1].peers
+    nodes[1].send_node_request(nodes[1].peers.values()[0], blk.sha256, missing[0], missing[1], 5)
+    time.sleep(0.1)
+    print "nodes[0] state:", nodes[0].merkles.values()[0].state
+    print "nodes[1] state:", nodes[1].merkles.values()[0].state
+    print "nodes[1] merkle:", nodes[1].merkles.values()[0].valid
+    print "nodes[1] purg:", nodes[1].merkles.values()[0].purgatory
+    
     print "jobs done"
 
 def close_nodes(nodes):
@@ -166,9 +198,9 @@ def btmerkletree_tests_random():
         is_okay = is_okay and (str(mt.state) == "2") # entire tree should be validated
         print("txcount: " + str(txcount) + " strat: " + str(fill_strategy) + " okay: " + str(is_okay))
 
-def btmerkletree_tests(blk):
+def btmerkletree_tests(blk, node):
     start = time.time()
-    mt = blocktorrent.bttrees.BTMerkleTree(blk.hashMerkleRoot)
+    mt = node.merkles[blk.sha256]
     count = len(blk.vtx)
     mt.levels = int(math.ceil(math.log(count, 2)))
 #    mt.txcounthints.append(count-1)

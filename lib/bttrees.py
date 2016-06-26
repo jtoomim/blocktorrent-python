@@ -31,13 +31,13 @@ def splitrun(level, start, length, hashes):
         i += 2**LSB
     return runs
 
-def hasdescendants(subtree, generations):
+def subtreehasdescendants(subtree, generations):
     assert len(subtree)
     if generations <= 0 or subtree[0] in (2, 3):
         return subtree[0]
     else:
         assert len(subtree) == 3
-        return min(hasdescendants(subtree[1], generations-1), hasdescendants(subtree[2], generations-1))
+        return min(subtreehasdescendants(subtree[1], generations-1), subtreehasdescendants(subtree[2], generations-1))
 
 class TreeState:
     MISSING = 0
@@ -130,6 +130,9 @@ class TreeState:
             s = s[1 + ((i>>L)%2)] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
 
+    def hasdescendants(self, level, index, generations):
+        return subtreehasdescendants(self.fetchsubtree(level, index), generations)
+
     def randmissingfrom(self, superset, generations=0):
         """
         Finds a node that is present (1, 2, 3) with descendants in superset but missing (0) 
@@ -146,7 +149,7 @@ class TreeState:
             elif b[0] == 0:
                 return None
             elif a[0] == 0:
-                if hasdescendants(b, gen):
+                if subtreehasdescendants(b, gen):
                     return level, index
                 else: 
                     return None
@@ -379,6 +382,24 @@ class BTMerkleTree:
             s = s[1 + ((i>>L)%2)] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
 
+    def getrun(self, level, index, generations):
+        """
+        Returns a list of hashes that are n generations descended from a node in the tree.
+        For efficiency, this method assumes that you've already ensured that those
+        nodes are present.
+        """
+        print "l=%i i=%i g=%i first hash: %i last hash: %i txcount: %i" % (level, index, generations, index*2**generations, (index+1)*2**generations-1, self.txcount)
+        subtree = self.getnode(level, index, subtree=True)
+        def helper(sub, gen):
+            #print gen, bool(sub[1]), bool(sub[2])
+            if not sub:
+                return []
+            elif gen==0:
+                return [sub[0]]
+            else:
+                return helper(sub[1], gen-1) + helper(sub[2], gen-1)
+        return helper(subtree, generations)
+
     def upgradestate(self, level, index, edge=False):
         # fixme: do we have the tx itself?
         # fixme: is this the right edge?
@@ -397,6 +418,10 @@ class BTMerkleTree:
         assert index < 2**level
         assert level >= 0
         assert level <= config.MAX_DEPTH
+
+        #statecode = 3 if hash in mempool else 2 if level == self.levels else 1
+        statecode = 2 if level == self.levels else 1
+        self.state.setnode(level, index, statecode)
         i = index # of subtree
         L = level # of subtree
         s = self.valid # the subtree
