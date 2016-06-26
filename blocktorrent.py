@@ -85,6 +85,7 @@ class BTUDPClient(threading.Thread):
         self.peer_manager = btnet.BTPeerManager(self.event_loop, self)
         self.peers = {} # currently connected peers, key = (IP, port)
         self.magic_map = {} # currently connected peers, key = (magic, (IP, port))
+        self.txmempool = {} # store txs
 
     def run(self):
         if not logs.logfile:
@@ -168,6 +169,24 @@ class BTUDPClient(threading.Thread):
                 if m.payload.startswith(BTMessage.MSG_ACK):
                     self.recv_ack(m, peer)
 
+                if m.payload.startswith(BTMessage.MSG_TX):
+                    self.recv_tx(m.payload, peer) # args?
+                
+                if m.payload.startswith(BTMessage.MSG_REQUEST_TX):
+                    self.send_tx(m.payload, peer) # args?
+
+                # need request_tx func. receive tx req and tx msg
+                # asking for specific tx? by txhash, or by blockhash and tx index,
+                    # or multiple tx by list of tx indices (offsets). 3 tx in row, 3tx [0,0,0]. would be bandwidth efficient
+                # need mempool for txs. dict of tx hashes to tx obj? tx obj from mininode, or other class we write on top
+                    # would want to add salted short hashes -- eventually
+                # receive req: check mempool. 
+                    # how would you check with req by offset or index? 
+                    # go into your block db, find that block, find hash that goes at that index, use that to get tx out of mempool
+                # Test: fill mempool with data from getblocktemplate, other nodes can req tx from it, they can fill their mempools, get complete blocks
+                    # although don't have logic for which parts of merkle tree to req....
+                    # write hardcoded thing that sends tx from one to another, check if its received at 2nd peer
+
                 if m.payload.startswith(BTMessage.MSG_REQUEST_NODES):
                     self.recv_node_request(m.payload, peer)
 
@@ -229,11 +248,43 @@ class BTUDPClient(threading.Thread):
         self.peer_manager.recv_ack(m, peer.low_level_peer)
 
     def recv_blockstate(self, data, peer):
+        print 'data in recv_blockstate', data
         s = StringIO.StringIO(data.split(BTMessage.MSG_BLOCKSTATE, 1)[1])
         hash = util.deser_uint256(s)
         if peer.has_header(hash) == 'header':
             peer.inflight[hash].state.deserialize(s)
             debuglog('btnet', "New block state for %i: \n" % hash, peer.inflight[hash])
+
+    # todo: in long run will have blockhash and index or indices, ie level in block ( 5th and 7th tx in block X)
+    # two ways node can learn about tx, complete block from file/source or from over network. add to mempool
+    def send_tx_req(self, txhash, peer):
+        assert peer in self.peers.values()
+        msg = BTMessage.MSG_REQUEST_TX + txhash
+        # todo: make node stop sending requests after receiving requested tx from peer
+        print "Sending tx request for ", txhash
+        peer.send_message(msg)
+    
+    def send_tx(self, data, peer):
+        txhash = data.split(BTMessage.MSG_REQUEST_TX, 1)[1]
+        for hash in self.txmempool:
+            if hash == txhash:
+                print "Found requested txhash in mempool, sending tx to peer: ", txhash
+                tx = self.txmempool[hash]
+                msg = BTMessage.MSG_TX + tx
+                peer.send_message(msg)
+
+    # Receive txs from peers, check mempool for hash, add to block if not (identify block?)
+    # TXs come through as binary blobs, use mininode CTransaction to deserialize, calc hash
+    def recv_tx(self, data, peer):
+        ctx = mininode.CTransaction()
+        tx = StringIO.StringIO(data.split(BTMessage.MSG_TX, 1)[1])
+        mininode.CTransaction.deserialize(ctx, tx)
+        ctx.calc_sha256()
+        print 'Storing tx received over the network for txhash: ', ctx.hash
+        if ctx.hash not in self.txmempool:
+            # Store binary blob in mempool... why does output not look the same as test mempool tx blob?
+            self.txmempool[ctx.hash] = ctx.serialize() 
+            print "Tx serialized and stored in mempool:", self.txmempool[ctx.hash]
 
     def send_blockstate(self, state, sha256, peer, level=0, index=0):
         assert peer in self.peers.values()

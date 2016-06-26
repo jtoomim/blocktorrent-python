@@ -56,22 +56,34 @@ def run_test(nodes):
         print "Importing block from template"
         blk = blocktorrent.blockfromtemplate(blocktorrent.gbt())
     
-    #fixme: add transactions from blk to nodes[0]'s txmempool'
     headerinfo = `blk`
     headerinfo = headerinfo.split('vtx=[')[0] + 'vtx[...])'
     print "Getblocktemplate from RPC produced:", headerinfo
     for peer in nodes[0].peers.values():
         nodes[0].send_header(blk, peer)
 
-    time.sleep(0.2)
-    print "Testing send_blockstate"
-    for node in nodes:
-        for peer in node.peers.values():
-            node.send_blockstate(node.merkles[blk.sha256].state, blk.sha256, peer)
-    time.sleep(0.1)
-    print "hashMerkleroot=%s, blockhash=%s" % tuple(map(lambda x: x[::-1].encode('hex_codec'), map(blocktorrent.mininode.ser_uint256, (blk.hashMerkleRoot, blk.sha256))))
-    for node in nodes:
-        print node.merkles.values()[0].valid[0][::-1].encode('hex_codec')
+    print "Adding txs from blk to node[0]'s txmempool..."
+    for tx in blk.vtx:
+        # Use sha256 and hash property?
+        # print "TX.hash", tx.hash 
+        nodes[0].txmempool[tx.hash] = tx.serialize()
+
+    print "Printing 2 txs from Node[0]'s txmempool..."
+    i = 0
+    for tx in nodes[0].txmempool:
+        if i < 2:
+            print 'txhash', tx
+            print 'tx', nodes[0].txmempool[tx].encode('hex')
+            i += 1
+
+    print "Testing send_tx_req"
+    '''Node[0] has populated mempool, node[1] asks for tx from it
+       Uses hardcoded tx from Node[0] for test purposes
+    '''
+    tx = '2a406f177c5907dbf62922b6b44e60ee95717a2065a989e8782531816d18b055'
+    for peer in nodes[1].peers.values():
+        nodes[1].send_tx_req(tx, peer)
+        time.sleep(0.1)
 
     print "Attempting btmerkletree_tests(blk)."
     btmerkletree_tests(blk, nodes[0])
@@ -90,8 +102,6 @@ def run_test(nodes):
     print "nodes[1] purg:", k
 
     nodes[0].merkles[blk.sha256].checktxcountproof(*nodes[0].merkles[blk.sha256].maketxcountproof())
-
-
 
     print "jobs done"
 
