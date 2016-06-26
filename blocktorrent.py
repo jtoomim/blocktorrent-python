@@ -282,7 +282,7 @@ class BTUDPClient(threading.Thread):
         ctx.calc_sha256()
         print 'txhash found over the network in recv_tx', ctx.hash
         if ctx.hash not in self.txmempool:
-            # Put ctx in binary blob to store in mempool... why does output not look the same as other test?
+            # Store binary blob in mempool... why does output not look the same as test mempool tx blob?
             self.txmempool[ctx.hash] = ctx.serialize() 
             print "Stored serialized tx in mempool:", self.txmempool[ctx.hash]
 
