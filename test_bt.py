@@ -88,20 +88,27 @@ def run_test(nodes):
     print "Attempting btmerkletree_tests(blk)."
     btmerkletree_tests(blk, nodes[0])
 
-    print "nodes[0] state:", nodes[0].merkles[blk.sha256].state
-    print "nodes[1] state:", nodes[1].merkles[blk.sha256].state
-    missing = nodes[1].merkles.values()[0].state.randmissingfrom(nodes[0].merkles[blk.sha256].state, generations=5)
-    print 'randmissingfrom: ', missing
-    print 'nodes[1].peers: ', nodes[1].peers
-    nodes[1].send_node_request(nodes[1].peers.values()[0], blk.sha256, missing[0], missing[1], 5)
-    time.sleep(0.1)
-    print "nodes[0] state:", nodes[0].merkles[blk.sha256].state
-    print "nodes[1] state:", nodes[1].merkles[blk.sha256].state
-    print "nodes[1] merkle:", nodes[1].merkles[blk.sha256].valid
-    k = nodes[1].merkles.values()[0].purgatory.keys(); k.sort()
-    print "nodes[1] purg:", k
+    nodes[1].merkles[blk.sha256].checktxcountproof(*nodes[0].merkles[blk.sha256].maketxcountproof())
 
-    nodes[0].merkles[blk.sha256].checktxcountproof(*nodes[0].merkles[blk.sha256].maketxcountproof())
+    print "nodes[0] state:", nodes[0].merkles[blk.sha256].state
+    print "nodes[1] state:", nodes[1].merkles[blk.sha256].state
+    for i in range(10):
+        missing = nodes[1].merkles.values()[0].state.randmissingfrom(nodes[0].merkles[blk.sha256].state, generations=5)
+        #print 'randmissingfrom: ', missing
+        #print 'nodes[1].peers: ', nodes[1].peers
+        nodes[1].send_node_request(nodes[1].peers.values()[0], blk.sha256, missing[0], missing[1], 5)
+        time.sleep(0.1)
+        #print "nodes[0] state:", nodes[0].merkles[blk.sha256].state
+        #print "nodes[1] state:", nodes[1].merkles[blk.sha256].state
+        #print "nodes[1] merkle:", nodes[1].merkles[blk.sha256].valid
+        k = nodes[1].merkles[blk.sha256].purgatory.keys(); k.sort()
+        #print "nodes[1] purg:", k
+
+    print "nodes[1] state:", nodes[1].merkles[blk.sha256].state.pyramid(12)
+    start = time.time()
+    nodes[1].merkles[blk.sha256].state.tobitmap([0, 5, 10, nodes[1].merkles[blk.sha256].levels], txlev=nodes[1].merkles[blk.sha256].levels)
+    end = time.time()
+    print "tobitmap took %f seconds" % (end - start)
 
     print "jobs done"
 
@@ -158,7 +165,7 @@ def btmerkletree_tests_random():
         hashes, merkle = build_random_merkle(txcount)
         mt = blocktorrent.bttrees.BTMerkleTree(merkle[0])
         mt.levels = int(math.ceil(math.log(txcount, 2)))
-        mt.txcounthints.append(txcount)
+        mt.txcount = txcount
         fill_strategy = random.randrange(4)
         if fill_strategy == 0:
             # Leaf nodes only, randomised
@@ -204,12 +211,7 @@ def btmerkletree_tests(blk, node):
     mt = node.merkles[blk.sha256]
     count = len(blk.vtx)
     mt.levels = int(math.ceil(math.log(count, 2)))
-#    mt.txcounthints.append(count-1)
-#    mt.txcounthints.append(count+1)
-#    mt.txcounthints.append(count/2)
-#    mt.txcounthints.append(count/2-1)
-#    mt.txcounthints.append(count/2+1)
-    mt.txcounthints.append(count)
+    mt.txcount = count
     for i in range(count):
         mt.addhash(mt.levels, i, blk.vtx[i].sha256)
     print 2**mt.levels, count
@@ -218,7 +220,6 @@ def btmerkletree_tests(blk, node):
     print "Found something close to %i hashes (hackishly counted) for a block with %i transactions" % (hashcount, len(blk.vtx))
     print "Nodes still in purgatory:", mt.purgatory.keys()
     print "btmerkletree_tests took %3.6f ms" % (1000*(middle - start))
-    print "mt found txcount=%i" % mt.txcount
     #print mt.purgatory
     print "mt.state: \n", mt.state
 

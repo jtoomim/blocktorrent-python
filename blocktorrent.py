@@ -348,9 +348,8 @@ class BTUDPClient(threading.Thread):
         run = [s.read(32) for i in range(length)]
         for i in range(length):
             # fixme: BTMerkleTree should have a method for batched
-            self.merkles[sha256].addhash(level+generations, index+i, run[i])
+            self.merkles[sha256].addhash(level+generations, index*2**generations+i, run[i])
         #fixme: right edge isn't handled here properly
-        print 'txcounthints=', self.merkles[sha256].txcounthints, self.merkles[sha256].txcount
         if self.merkles[sha256].getnode(level, index): # this check appears to not be working as intended
             print "Supposedly(fixme) successfully added from peer=%s: l=%i i=%i g=%i L=%i h=%s" % (str(peer), level, index, generations, length, util.ser_uint256(sha256)[::-1].encode('hex'))
             debuglog('btnet', "Successfully added from peer=%s: l=%i i=%i g=%i L=%i h=%s" % (str(peer), level, index, generations, length, util.ser_uint256(sha256)[::-1].encode('hex')))

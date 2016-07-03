@@ -32,7 +32,7 @@ def splitrun(level, start, length, hashes):
     return runs
 
 def subtreehasdescendants(subtree, generations):
-    assert len(subtree)
+    assert subtree and len(subtree)
     if generations <= 0 or subtree[0] in (2, 3):
         return subtree[0]
     else:
@@ -125,13 +125,49 @@ class TreeState:
             if L==0:
                 return s
             if s[0] in [0, 2, 3]: # if this node speaks for its descendants or is the target
-                return None
+                return [s[0]]
             L -= 1
             s = s[1 + ((i>>L)%2)] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
 
     def hasdescendants(self, level, index, generations):
         return subtreehasdescendants(self.fetchsubtree(level, index), generations)
+
+    def tobitmap(self, levels=[5], txlev=None):
+        bitmaps = {n:[0]*2**n for n in levels}
+        if txlev:
+           bitmaps['tx'] = [0]*2**txlev
+        i, lev = 0, 0
+
+        def filler(subtree, curlevel, index):
+            val = subtree[0]
+            if val in (0, 2, 3):
+                v = 1 if val else 0 # minor optimization: no need to do this calc in the inner loop
+                for l in levels:
+                    if l >= curlevel:
+                        bmp = bitmaps[l]
+                        for i in range(index*2**(l-curlevel), (index+1)*2**(l-curlevel)):
+                            bmp[i] = v
+                if txlev:
+                    assert txlev >= curlevel
+                    v = 1 if val == 3 else 0
+                    bmp = bitmaps['tx']
+                    for i in range(index*2**(txlev-curlevel), (index+1)*2**(l-curlevel)):
+                        bmp[i] = v
+            else:
+                if curlevel in levels:
+                    bitmaps[curlevel][index] = 1 if val else 0
+                filler(subtree[1], curlevel+1, index*2)
+                filler(subtree[2], curlevel+1, index*2+1)
+
+        filler(self.state, 0, 0)
+
+        #for level in levels:
+        #    bmp = bitmaps[level]
+        #    print "level %s: %s" % (`level`, hex(int(''.join(map(str, bmp)), 2))) # fixme: omits leading zeros
+        #if txlev:
+        #    print "level tx: %s" % (hex(int(''.join(map(str, bitmaps['tx'])), 2))) # fixme: omits leading zeros
+        return bitmaps
 
     def randmissingfrom(self, superset, generations=0):
         """
@@ -148,9 +184,22 @@ class TreeState:
                 return None
             elif b[0] == 0:
                 return None
-            elif a[0] == 0:
+            elif a[0] == 1: #fixme: randomize the order of the following checks
+                if not bool(a[1][0]) == bool(a[2][0]): # if we have one child but not the other
+                    if not a[1][0] and subtreehasdescendants(b[1], gen):
+                        return level+1, index*2
+                    if not a[1][0] and subtreehasdescendants(b[1], gen):
+                        return level+1, index*2
+                elif not a[1][0] and not a[2][0]:
+                    if subtreehasdescendants(b, gen):
+                        return level, index
+                    else:
+                        return None
+            elif a[0] == 0: 
+                print "a[0] == 0"
                 if subtreehasdescendants(b, gen):
-                    return level, index
+                        return level, index
+
                 else: 
                     return None
             
@@ -239,7 +288,7 @@ class TreeState:
                 s.append(left)
         return
 
-    def pyramid(self):
+    def pyramid(self, maxlevels=9):
         def extract(sub, levs, i, pos):
             if len(levs) <= i:
                 levs.append([9]*2**i)
@@ -250,12 +299,15 @@ class TreeState:
             extract(sub[2], levs, i+1, (pos<<1)+1)
         levels = [[9]]
         extract(self.state, levels, 0, 0)
+        suppressed = len(levels) > maxlevels
+        levels = levels[:maxlevels]
         spaces = int(2**(len(levels)))
         lines = []
         for i in range(len(levels)): # this formatting isn't quite correct, but it's semi-readable
             level = levels[i]
             s1, s2 = int(math.ceil(spaces/(2**(i+2)))), int(math.floor(spaces/(2**(i+2)))-1)
             lines.append(((((" "*s1+"%i"+" "*s2)*len(level))) % tuple(level)).replace('9', '-'))
+        if suppressed: lines.append("levels below %i suppressed" % maxlevels)
         return "\n".join(lines)
 
     def serialize(self, level=0, index=0):
@@ -353,7 +405,6 @@ class BTMerkleTree:
         # A dict for purgatory is a bit of a hack, and should probably be fixed before switching to C++.
         self.purgatory = {} # key = (level, index); value = [candidate hashes]
         self.peerorigins = {} # key = hash, value = peer
-        self.txcounthints = [] # we can't trust it when a peer says how many txes there are, so they're just hints
         self.levels = 0
         self.txcount = 0
 
@@ -440,29 +491,33 @@ class BTMerkleTree:
             levels += 1
             path = path >> 1
 
-        hashes.reverse()
+        revhashes = hashes[::-1]
         path = txcount-1
         level = levels
-        parent = hashes.pop(0)
+        parent = revhashes.pop(0)
+        checked = [(parent, path, level)]
 
         while level:
+            print "path=%i level=%i" % (path, level)
             if bool(path & 1):
-                left = hashes.pop(0)
+                left = revhashes.pop(0)
+                checked.insert(0, (left, path ^ 1, level))
             else:
                 left = parent
             right = parent # no matter what
             parent = self.calcparent(left, right)
 
-            #for debug
-            savedleft, savedright = self.getnode(level, path & 2**32-2), self.getnode(level, path | 1)
-            savedparent = self.calcparent(savedleft, savedright)
-
             level -= 1
             path = path >> 1
 
-        # fixme: add the checked hashes to self.valid if they connect, and return the result of the check
-        # fixme: get rid of all instances of the obsolete txcounthints
-
+        if parent == self.valid[0]:
+            print "Successfully verified txcount == %i" % txcount
+            self.txcount = txcount
+            self.levels = int(math.ceil(math.log(txcount, 2)))
+            for hsh, path, level in checked:
+                self.addhash(level, path, hsh)
+        else:
+            print "Unsuccessful txcount verification"
 
     def upgradestate(self, level, index, edge=False):
         # fixme: do we have the tx itself?
@@ -537,13 +592,12 @@ class BTMerkleTree:
 
         if not siblingkey in self.purgatory: # Is this is the right edge of the tree?
             if not index & 1: # if even (left sibling)
-                for hint in self.txcounthints:
-                    height = int(math.ceil(math.log(hint, 2)))
-                    if level > height: continue
-                    edge = (hint-1) >> (height - level)
+                if self.txcount:
+                    height = int(math.ceil(math.log(self.txcount, 2)))
+                    assert level <= height
+                    edge = (self.txcount-1) >> (height - level)
                     if index == edge:
                         self.purgatory[siblingkey] = hash # this can be overwritten later
-                        break
 
         if siblingkey in self.purgatory: # then we can check one level up
             sib = self.purgatory[siblingkey]
@@ -574,7 +628,7 @@ class BTMerkleTree:
                 self.checkchildren(siblingkey[0], siblingkey[1])
         elif result == 'invalid':
             if sib == hash: # invalid hint about the number of transactions
-                debuglog('btnet', 'Invalid txcount hint: %i among ' % hint, self.txcounthints)
+                debuglog('btnet', 'Invalid txcount? -- %i ' % self.txcount)
                 del self.purgatory[max(siblingkey, key)]
                 result = 'orphan'
             else:
@@ -606,10 +660,10 @@ class BTMerkleTree:
             hashes[i] = self.purgatory[k] if k in self.purgatory else None
             if not hashes[i]:
                 if not keys[i][1] & 1: # if even (left sibling), we check to see if this is the right edge of the tree
-                    for hint in self.txcounthints:
-                        height = int(math.ceil(math.log(hint, 2)))
+                    if self.txcount:
+                        height = int(math.ceil(math.log(self.txcount, 2)))
                         if keys[i][0] > height: continue
-                        edge = (hint-1) >> (height - keys[i][0])
+                        edge = (self.txcount-1) >> (height - keys[i][0])
                         if index*2 == edge:
                             #print "found edge at ", keys[i]
                             hashes[i] = hashes[1] # this can be overwritten later
