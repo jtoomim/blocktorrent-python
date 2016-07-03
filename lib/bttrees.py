@@ -169,6 +169,37 @@ class TreeState:
         #    print "level tx: %s" % (hex(int(''.join(map(str, bitmaps['tx'])), 2))) # fixme: omits leading zeros
         return bitmaps
 
+    def getrequestables(self, ownbitmaps=None, peerbitmaps=None):
+        if not ownbitmaps:
+            txlev = int(math.ceil(math.log(len(peerbitmaps['tx']), 2))) if 'tx' in peerbitmaps else None
+            ownbitmaps = self.tobitmap([l for l in peerbitmaps if type(l) == int], txlev)
+
+        needful = {}
+        requestables = {}
+        pipelineables = {}
+        levels = ownbitmaps.keys()
+        levels.sort()
+        tx = 'tx' in levels
+        if tx: levels.remove('tx')
+        print levels
+        for l, nxt in zip(levels[:-1], levels[1:]):
+            needful[l] = []
+            if peerbitmaps:
+                assert l in peerbitmaps
+                assert nxt in peerbitmaps
+                requestables[l] = []
+                pipelineables[l] = []
+            for i in range(len(ownbitmaps[l])):
+                needful[l].append( int(0 in ownbitmaps[nxt][i*2**(nxt-l):(i+1)*2**(nxt-l)]) )
+                if peerbitmaps:
+                    requestables[l].append( int(needful[l][-1] and not 0 in peerbitmaps[nxt][i*2**(nxt-l):(i+1)*2**(nxt-l)] and ownbitmaps[l][i]) )
+                    pipelineables[l].append( int(needful[l][-1] and not 0 in peerbitmaps[nxt][i*2**(nxt-l):(i+1)*2**(nxt-l)] and not ownbitmaps[l][i]) )
+        if peerbitmaps:
+            return (needful, requestables, pipelineables)
+        else:
+            return needful
+
+
     def randmissingfrom(self, superset, generations=0):
         """
         Finds a node that is present (1, 2, 3) with descendants in superset but missing (0) 
@@ -195,7 +226,7 @@ class TreeState:
                         return level, index
                     else:
                         return None
-            elif a[0] == 0: 
+            elif a[0] == 0:
                 print "a[0] == 0"
                 if subtreehasdescendants(b, gen):
                         return level, index

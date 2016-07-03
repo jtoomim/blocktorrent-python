@@ -92,24 +92,27 @@ def run_test(nodes):
 
     print "nodes[0] state:", nodes[0].merkles[blk.sha256].state
     print "nodes[1] state:", nodes[1].merkles[blk.sha256].state
+    requests = 0
     for i in range(10):
-        missing = nodes[1].merkles.values()[0].state.randmissingfrom(nodes[0].merkles[blk.sha256].state, generations=5)
-        #print 'randmissingfrom: ', missing
-        #print 'nodes[1].peers: ', nodes[1].peers
-        nodes[1].send_node_request(nodes[1].peers.values()[0], blk.sha256, missing[0], missing[1], 5)
+        #print "nodes[1] state:", nodes[1].merkles[blk.sha256].state.pyramid(12)
+        n1b = nodes[1].merkles[blk.sha256].state.tobitmap([0, 5, 6, nodes[1].merkles[blk.sha256].levels], txlev=nodes[1].merkles[blk.sha256].levels)
+        n0b = nodes[0].merkles[blk.sha256].state.tobitmap([0, 5, 6, nodes[0].merkles[blk.sha256].levels], txlev=nodes[0].merkles[blk.sha256].levels)
+
+        need, req, pipe = nodes[1].merkles[blk.sha256].state.getrequestables(n1b, n0b)
+        levels = req.keys()
+        levels.append(nodes[1].merkles[blk.sha256].levels)
+        levels.sort()
+        for l, nxt in zip(levels[:-1], levels[1:]):
+            for i in range(len(req[l])):
+                if req[l][i]:
+                    nodes[1].send_node_request(nodes[1].peers.values()[0], blk.sha256, l, i, nxt-l)
+                    requests += 1
+                    print "requesting l=%i i=%i g=%i" % (l, i, nxt-l)
         time.sleep(0.1)
-        #print "nodes[0] state:", nodes[0].merkles[blk.sha256].state
-        #print "nodes[1] state:", nodes[1].merkles[blk.sha256].state
-        #print "nodes[1] merkle:", nodes[1].merkles[blk.sha256].valid
-        k = nodes[1].merkles[blk.sha256].purgatory.keys(); k.sort()
-        #print "nodes[1] purg:", k
+    time.sleep(2)
 
     print "nodes[1] state:", nodes[1].merkles[blk.sha256].state.pyramid(12)
-    start = time.time()
-    nodes[1].merkles[blk.sha256].state.tobitmap([0, 5, 10, nodes[1].merkles[blk.sha256].levels], txlev=nodes[1].merkles[blk.sha256].levels)
-    end = time.time()
-    print "tobitmap took %f seconds" % (end - start)
-
+    print "total node requests: %i" % requests
     print "jobs done"
 
 def close_nodes(nodes):

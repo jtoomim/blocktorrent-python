@@ -302,7 +302,7 @@ class BTUDPClient(threading.Thread):
         flags = 0
         if complete: flags |= 1
         msg = BTMessage.MSG_REQUEST_NODES + util.ser_uint256(sha256) + chr(level) + util.ser_varint(index) + chr(generations) + util.ser_varint(flags)
-        print "sending message %s to peer %s" % (msg.encode('hex'), str(peer))
+        #print "sending message %s to peer %s" % (msg.encode('hex'), str(peer))
         peer.send_message(msg)
 
     def recv_node_request(self, data, peer):
@@ -332,7 +332,7 @@ class BTUDPClient(threading.Thread):
         if flags: raise NotImplementedError
         msg = BTMessage.MSG_RUN + util.ser_uint256(sha256) + chr(level) + util.ser_varint(index) + chr(generations) + util.ser_varint(len(run)) + util.ser_varint(flags) + ''.join(run)
         if len(msg) > peer.MTU:
-            debuglog('btnet', 'MSG_RUN has length %i which exceeds peer %s\'s max MTU of %i' % (len(msg), str(peer), self.peers[peer].MTU))
+            debuglog('btnet', 'MSG_RUN has length %i which exceeds peer %s\'s max MTU of %i' % (len(msg), str(peer), peer.MTU))
         peer.send_message(msg)
 
     def recv_nodes(self, data, peer):
@@ -351,8 +351,9 @@ class BTUDPClient(threading.Thread):
             self.merkles[sha256].addhash(level+generations, index*2**generations+i, run[i])
         #fixme: right edge isn't handled here properly
         if self.merkles[sha256].getnode(level, index): # this check appears to not be working as intended
-            print "Supposedly(fixme) successfully added from peer=%s: l=%i i=%i g=%i L=%i h=%s" % (str(peer), level, index, generations, length, util.ser_uint256(sha256)[::-1].encode('hex'))
-            debuglog('btnet', "Successfully added from peer=%s: l=%i i=%i g=%i L=%i h=%s" % (str(peer), level, index, generations, length, util.ser_uint256(sha256)[::-1].encode('hex')))
+            pass
+        #    print "Supposedly(fixme) successfully added from peer=%s: l=%i i=%i g=%i L=%i h=%s" % (str(peer), level, index, generations, length, util.ser_uint256(sha256)[::-1].encode('hex'))
+        #    debuglog('btnet', "Successfully added from peer=%s: l=%i i=%i g=%i L=%i h=%s" % (str(peer), level, index, generations, length, util.ser_uint256(sha256)[::-1].encode('hex')))
         else:
             print "Failed to add from peer=%s: l=%i i=%i g=%i h=%s" % (str(peer), level, index, generations, util.ser_uint256(sha256)[::-1].encode('hex'))
             debuglog('btnet', "Failed to add from peer=%s: l=%i i=%i g=%i h=%s" % (str(peer), level, index, generations, util.ser_uint256(sha256)[::-1].encode('hex')))
