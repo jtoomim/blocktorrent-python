@@ -344,17 +344,10 @@ class BTUDPClient(threading.Thread):
         length = util.deser_varint(s)
         flags = util.deser_varint(s)
         if flags: raise NotImplementedError
-        #fixme: the next line will fail on the right edge of the merkle tree
         run = [s.read(32) for i in range(length)]
-        for i in range(length):
-            # fixme: BTMerkleTree should have a method for batched
-            self.merkles[sha256].addhash(level+generations, index*2**generations+i, run[i])
-        #fixme: right edge isn't handled here properly
-        if self.merkles[sha256].getnode(level, index): # this check appears to not be working as intended
-            pass
-        #    print "Supposedly(fixme) successfully added from peer=%s: l=%i i=%i g=%i L=%i h=%s" % (str(peer), level, index, generations, length, util.ser_uint256(sha256)[::-1].encode('hex'))
-        #    debuglog('btnet', "Successfully added from peer=%s: l=%i i=%i g=%i L=%i h=%s" % (str(peer), level, index, generations, length, util.ser_uint256(sha256)[::-1].encode('hex')))
-        else:
+        result = self.merkles[sha256].checkaddrun(level, index, generations, length, run)
+
+        if not result:
             print "Failed to add from peer=%s: l=%i i=%i g=%i h=%s" % (str(peer), level, index, generations, util.ser_uint256(sha256)[::-1].encode('hex'))
             debuglog('btnet', "Failed to add from peer=%s: l=%i i=%i g=%i h=%s" % (str(peer), level, index, generations, util.ser_uint256(sha256)[::-1].encode('hex')))
 

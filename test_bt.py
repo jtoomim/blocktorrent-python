@@ -113,6 +113,8 @@ def run_test(nodes):
 
     print "nodes[1] state:", nodes[1].merkles[blk.sha256].state.pyramid(12)
     print "total node requests: %i" % requests
+    print "nodes[1] state changes: %i" % nodes[1].merkles[blk.sha256].state.changes
+    print "nodes[1] run changes: %i" % nodes[1].merkles[blk.sha256].runs
     print "jobs done"
 
 def close_nodes(nodes):

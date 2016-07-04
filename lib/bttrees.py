@@ -6,31 +6,6 @@ import logs as logs
 from logs import debuglog, log
 from util import to_hex
 
-
-def splitrun(level, start, length, hashes):
-    """
-    Splits one long run into a group of shorter runs, each of which is of size
-    2**n and aligned with starts and ends on 2**n index boundaries, allowing
-    each run to be used to compute one hash that is an ancestor to all nodes
-    in the run and to no other nodes.
-    """
-    max_length = 2**level
-    assert start + length <= max_length
-    assert length == len(hashes)
-    rightedge = hashes[-1] == hashes[-2]
-    # a run of length 2**n must start at an index where the n LSB have a value
-    # of 0 and end where the n LSB have a value of 1.
-    runs = []
-    i = start
-    while i < start+length:
-        # count how many LSB are zero
-        LSB = 0
-        while not (i & (1<<LSB)) and (i + 2**LSB < max_length):
-            LSB += 1
-        runs.append([i, 2**LSB, hashes[i-start:i+2**LSB-start]])
-        i += 2**LSB
-    return runs
-
 def subtreehasdescendants(subtree, generations):
     assert subtree and len(subtree)
     if generations <= 0 or subtree[0] in (2, 3):
@@ -77,6 +52,7 @@ class TreeState:
         If nodestate != 1, then the node entry must not include children.
         """
         self.state = [TreeState.MISSING]
+        self.changes = 0 # the number of nodes added since initialization; used for deciding when to re-send to peers
 
     def getnode(self, level, index):
         """
@@ -199,54 +175,6 @@ class TreeState:
         else:
             return needful
 
-
-    def randmissingfrom(self, superset, generations=0):
-        """
-        Finds a node that is present (1, 2, 3) with descendants in superset but missing (0) 
-        in self.state.
-        """
-        if not type(superset) == list:
-            superset = superset.state
-        def helper(a, b, level, index, gen):
-            assert len(a) and len(b)
-
-            #base cases
-            if a[0] in (2, 3):
-                return None
-            elif b[0] == 0:
-                return None
-            elif a[0] == 1: #fixme: randomize the order of the following checks
-                if not bool(a[1][0]) == bool(a[2][0]): # if we have one child but not the other
-                    if not a[1][0] and subtreehasdescendants(b[1], gen):
-                        return level+1, index*2
-                    if not a[1][0] and subtreehasdescendants(b[1], gen):
-                        return level+1, index*2
-                elif not a[1][0] and not a[2][0]:
-                    if subtreehasdescendants(b, gen):
-                        return level, index
-                    else:
-                        return None
-            elif a[0] == 0:
-                print "a[0] == 0"
-                if subtreehasdescendants(b, gen):
-                        return level, index
-
-                else: 
-                    return None
-            
-            #recursive cases
-            assert len(a) == 3
-            j = random.randint(0,1)
-            for i in (j, j^1): # (0, 1) in random order
-                if b[0] in (2, 3):
-                    res = helper(a[i+1], b, level+1, 2*index+i, gen-1)
-                else:
-                    res = helper(a[i+1], b[i+1], level+1, 2*index+i, gen-1)
-                if res: return res
-            return None
-
-        return helper(self.state, superset, 0, 0, generations)
-
     def setnode(self, level, index, value):
         """
         Sets the state of a node of the tree, specified by its level, index, and
@@ -298,6 +226,7 @@ class TreeState:
                 return # nothing to see here, move along
             if v > value: # this can probably happen from out-of-order packets. Remove later.
                 return
+            self.changes += 1
             if value == 1:
                 assert len(s) == 1
                 assert s[0] <= value
@@ -438,6 +367,7 @@ class BTMerkleTree:
         self.peerorigins = {} # key = hash, value = peer
         self.levels = 0
         self.txcount = 0
+        self.runs = 0 # number of runs added; used to help decide when to send a new state to peers
 
     def getnode(self, level, index, subtree=False):
         """
@@ -479,6 +409,38 @@ class BTMerkleTree:
             else:
                 return helper(sub[1], gen-1) + helper(sub[2], gen-1)
         return helper(subtree, generations)
+
+    def checkaddrun(self, level, index, generations, length, run):
+        root = self.getnode(level, index)
+        curlevel = runlevel = level + generations
+        parents = []
+        hashes = run[:]
+        curlength = length
+        subtreelevels = [hashes]
+        while curlevel > level:
+            for i in range(0, curlength, 2):
+                if i+1 >= len(hashes):
+                    parents.append(self.calcparent(hashes[i], hashes[i]))
+                else:
+                    parents.append(self.calcparent(hashes[i], hashes[i+1]))
+
+            hashes = parents
+            subtreelevels.append(parents)
+            parents = []
+            curlevel -= 1
+            curlength = len(hashes)
+
+        assert len(hashes) == 1
+        if not hashes[0] == root:
+            return False
+
+        self.runs += 1
+        subtreelevels.reverse()
+        for l in range(len(subtreelevels)):
+            curlevel = level + l
+            for i in range(len(subtreelevels[l])):
+                self.setnode(curlevel, index*2**l+i, subtreelevels[l][i])
+        return True
 
     def maketxcountproof(self):
         '''Prove the number of transactions in a block by returning all of the hashes needed to connect
