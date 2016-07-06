@@ -89,9 +89,8 @@ def run_test(nodes):
     btmerkletree_tests(blk, nodes[0])
 
     nodes[1].merkles[blk.sha256].checktxcountproof(*nodes[0].merkles[blk.sha256].maketxcountproof())
-
     print "nodes[0] state:", nodes[0].merkles[blk.sha256].state
-    print "nodes[1] state:", nodes[1].merkles[blk.sha256].state
+    print "nodes[1] state before downloads\n", nodes[1].merkles[blk.sha256].state
     requests = 0
     for i in range(10):
         #print "nodes[1] state:", nodes[1].merkles[blk.sha256].state.pyramid(12)
@@ -107,11 +106,11 @@ def run_test(nodes):
                 if req[l][i]:
                     nodes[1].send_node_request(nodes[1].peers.values()[0], blk.sha256, l, i, nxt-l)
                     requests += 1
-                    print "requesting l=%i i=%i g=%i" % (l, i, nxt-l)
+                    #print "requesting l=%i i=%i g=%i" % (l, i, nxt-l)
         time.sleep(0.1)
-    time.sleep(2)
+    time.sleep(.1)
 
-    print "nodes[1] state:", nodes[1].merkles[blk.sha256].state.pyramid(12)
+    print "nodes[1] state after downloads:", nodes[1].merkles[blk.sha256].state.pyramid(12)
     print "total node requests: %i" % requests
     print "nodes[1] state changes: %i" % nodes[1].merkles[blk.sha256].state.changes
     print "nodes[1] run changes: %i" % nodes[1].merkles[blk.sha256].runs

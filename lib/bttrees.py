@@ -157,7 +157,6 @@ class TreeState:
         levels.sort()
         tx = 'tx' in levels
         if tx: levels.remove('tx')
-        print levels
         for l, nxt in zip(levels[:-1], levels[1:]):
             needful[l] = []
             if peerbitmaps:
@@ -461,12 +460,12 @@ class BTMerkleTree:
             index *= 2
             # if we're taking the right branch, we need to include the left branch's hash.
             # if we're taking the left branch, the recipient will just duplicate the left branch's hash.
-            if path & 2**levels:
+            if path & 2**levels: # right branch
                 hashes.append(subtree[1][0])
-                if levels == 0: hashes.append(subtree[0])
+                if levels == 0: hashes.append(subtree[2][0]) # for the last level, we need to include the right branch too
                 subtree = subtree[2]
                 index += 1
-            else:
+            else: # left branch
                 subtree = subtree[1]
                 if levels == 0: hashes.append(subtree[0])
             path = path & (2**levels-1)
@@ -491,7 +490,6 @@ class BTMerkleTree:
         checked = [(parent, path, level)]
 
         while level:
-            print "path=%i level=%i" % (path, level)
             if bool(path & 1):
                 left = revhashes.pop(0)
                 checked.insert(0, (left, path ^ 1, level))
