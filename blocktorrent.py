@@ -53,7 +53,8 @@ class BTPeer:
         self.low_level_peer = low_level_peer
         self.incoming_magic = incoming_magic
         self.inflight = {}
-        self.blocks = set()
+        self.blocks = {}
+        self.lastupdates = {} # sha256: (runcount, timestamp)
         self.MTU = 1472 # fixme: do MTU path discovery for this
         #self.txinv = set() # we'll probably want to do this in a more efficient fashion than a set
     def __str__(self):
@@ -288,6 +289,7 @@ class BTUDPClient(threading.Thread):
 
     def send_blockstate(self, state, sha256, peer, level=0, index=0):
         assert peer in self.peers.values()
+        self.peer.lastupdates[sha256] = (self.merkles[sha256].runs, time.time())
         msg = BTMessage.MSG_BLOCKSTATE + util.ser_uint256(sha256) + state.serialize(level, index)
         peer.send_message(msg)
 
@@ -350,6 +352,22 @@ class BTUDPClient(threading.Thread):
         if not result:
             print "Failed to add from peer=%s: l=%i i=%i g=%i h=%s" % (str(peer), level, index, generations, util.ser_uint256(sha256)[::-1].encode('hex'))
             debuglog('btnet', "Failed to add from peer=%s: l=%i i=%i g=%i h=%s" % (str(peer), level, index, generations, util.ser_uint256(sha256)[::-1].encode('hex')))
+
+    def maybe_update_peers(self, sha256):
+        max_runs = config.UPDATE_PEERS_EVERY_N_RUNS
+        max_ms = UPDATE_PEERS_EVERY_N_MS
+        for peer in self.peers.values():
+            assert sha256 in peer.lastupdates
+            oldruns, oldms = peer.lastupdates[sha256]
+            ms = (time.time() - ms) * 1000.
+            runs = float(self.merkles[sha256].runs - oldruns)
+            if (runs / max_runs) + (ms / max_ms) > 1:
+                self.send_blockstate(self.merkles[sha256].state, sha256, peer)
+            else:
+                pass # fixme: queue a delayed call to this to make sure that peers eventually hear about the updates
+
+    def maybe_download_nodes(self, sha256):
+        pass
 
     def send_txcount_proof(self, peer, sha256):
         pass
