@@ -196,6 +196,7 @@ class BTMessage:
     MSG_RUN = 'butyoucanthide'
     MSG_MISSING_BLOCK = 'meiyou' # We don't have the header for the block that a peer requested parts of.
     MSG_MISSING_NODES = 'drawingablank' # We don't have the nodes that a peer requested.
+    MSG_REQ_TXCOUNT = 'doesiteverend'
     MSG_TXCOUNT_PROOF = 'thisistheendmyonlyfriend'
 
     def __init__(self, payload, magic, sequence=None):

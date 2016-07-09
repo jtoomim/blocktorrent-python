@@ -4,7 +4,7 @@
 import config
 import lib.logs as logs
 from lib.logs import debuglog, log
-import socket, select, threading, urllib2, sys, binascii, StringIO, traceback
+import socket, select, threading, urllib2, sys, binascii, StringIO, traceback, time, random
 from lib import authproxy, mininode, util, bttrees
 import traceback
 import btnet
@@ -194,6 +194,9 @@ class BTUDPClient(threading.Thread):
                 if m.payload.startswith(BTMessage.MSG_RUN):
                     self.recv_nodes(m.payload, peer)
 
+                if m.payload.startswith(BTMessage.MSG_REQ_TXCOUNT):
+                    self.handle_txcount_req(m.payload, peer)
+
                 if m.payload.startswith(BTMessage.MSG_TXCOUNT_PROOF):
                     self.recv_txcount_proof(m.payload, peer)
 
@@ -244,17 +247,11 @@ class BTUDPClient(threading.Thread):
             debuglog('btnet', "Received duplicate header from %s: %s" % (peer, hex(blk.sha256)[2:]))
         peer.log_header(blk.sha256)
         self.broadcast_header(blk)
+        self.req_txcount_proof(peer, blk.sha256)
+        # fixme: figure out how to deal with txcount proofs sent in the same packet in a multipass message
     
     def recv_ack(self, m, peer):
         self.peer_manager.recv_ack(m, peer.low_level_peer)
-
-    def recv_blockstate(self, data, peer):
-        print 'data in recv_blockstate', data
-        s = StringIO.StringIO(data.split(BTMessage.MSG_BLOCKSTATE, 1)[1])
-        hash = util.deser_uint256(s)
-        if peer.has_header(hash) == 'header':
-            peer.inflight[hash].state.deserialize(s)
-            debuglog('btnet', "New block state for %i: \n" % hash, peer.inflight[hash])
 
     # todo: in long run will have blockhash and index or indices, ie level in block ( 5th and 7th tx in block X)
     # two ways node can learn about tx, complete block from file/source or from over network. add to mempool
@@ -289,15 +286,54 @@ class BTUDPClient(threading.Thread):
 
     def send_blockstate(self, state, sha256, peer, level=0, index=0):
         assert peer in self.peers.values()
-        self.peer.lastupdates[sha256] = (self.merkles[sha256].runs, time.time())
+        peer.lastupdates[sha256] = (self.merkles[sha256].runs, time.time())
         msg = BTMessage.MSG_BLOCKSTATE + util.ser_uint256(sha256) + state.serialize(level, index)
         peer.send_message(msg)
+
+    def recv_blockstate(self, data, peer):
+        s = StringIO.StringIO(data.split(BTMessage.MSG_BLOCKSTATE, 1)[1])
+        sha256 = util.deser_uint256(s)
+        if peer.has_header(sha256) == 'header':
+            peer.inflight[sha256].state.deserialize(s)
+            debuglog('btnet', "New block state for %i: \n" % sha256, peer.inflight[sha256])
+        self.maybe_download_nodes(peer, sha256)
 
     def broadcast_header(self, cblock):
         sha = cblock.sha256
         for peer in self.peers.values():
             if not peer.has_header(sha):
                 self.send_header(cblock, peer)
+
+    def req_txcount_proof(self, peer, sha256):
+        msg = BTMessage.MSG_REQ_TXCOUNT + util.ser_uint256(sha256)
+        print "sending txcount proof req to ", peer
+        peer.send_message(msg)
+
+    def handle_txcount_req(self, data, peer):
+        s = StringIO.StringIO(data.split(BTMessage.MSG_REQ_TXCOUNT, 1)[1])
+        sha256 = util.deser_uint256(s)
+        self.send_txcount_proof(peer, sha256)
+
+    def send_txcount_proof(self, peer, sha256):
+        txcount, hashes = self.merkles[sha256].maketxcountproof()
+        if txcount and hashes:
+            msg = BTMessage.MSG_TXCOUNT_PROOF + util.ser_uint256(sha256) + util.ser_varint(txcount) + ''.join(hashes)
+            peer.send_message(msg)
+        else:
+            "couldn't send txcount proof to ", peer
+
+    def recv_txcount_proof(self, data, peer):
+        s = StringIO.StringIO(data.split(BTMessage.MSG_TXCOUNT_PROOF)[1])
+        sha256 = util.deser_uint256(s)
+        txcount = util.deser_varint(s)
+        levels, hashcount, path = 0, 1, txcount-1
+        while path:
+            hashcount += path & 1
+            levels += 1
+            path = path >> 1
+        print "txcount proof received: ", levels, hashcount, txcount
+        hashes = [s.read(32) for i in range(hashcount)]
+        self.merkles[sha256].checktxcountproof(txcount, hashes)
 
     def send_node_request(self, peer, sha256, level, index, generations, complete=0):
         assert level < 253 and generations < 253 and index < 2**level and index < 2**30
@@ -352,25 +388,67 @@ class BTUDPClient(threading.Thread):
         if not result:
             print "Failed to add from peer=%s: l=%i i=%i g=%i h=%s" % (str(peer), level, index, generations, util.ser_uint256(sha256)[::-1].encode('hex'))
             debuglog('btnet', "Failed to add from peer=%s: l=%i i=%i g=%i h=%s" % (str(peer), level, index, generations, util.ser_uint256(sha256)[::-1].encode('hex')))
+        else:
+            self.maybe_update_peers(sha256)
 
     def maybe_update_peers(self, sha256):
+        if not self.merkles[sha256].txcount:
+            peers = [peer for peer in self.peers if sha256 in peer.blocks or sha256 in peer.inflight]
+            peer = random.choice(peers)
+            self.req_txcount_proof(peer, sha256)
+            print "requesting txcount proof from peer", peer
+            return
+
         max_runs = config.UPDATE_PEERS_EVERY_N_RUNS
-        max_ms = UPDATE_PEERS_EVERY_N_MS
+        max_ms = config.UPDATE_PEERS_EVERY_N_MS
         for peer in self.peers.values():
-            assert sha256 in peer.lastupdates
+            if not sha256 in peer.lastupdates:
+                self.send_blockstate(self.merkles[sha256].state, sha256, peer)
+                return
             oldruns, oldms = peer.lastupdates[sha256]
-            ms = (time.time() - ms) * 1000.
+            ms = (time.time() - oldms) * 1000.
             runs = float(self.merkles[sha256].runs - oldruns)
             if (runs / max_runs) + (ms / max_ms) > 1:
                 self.send_blockstate(self.merkles[sha256].state, sha256, peer)
             else:
                 pass # fixme: queue a delayed call to this to make sure that peers eventually hear about the updates
 
-    def maybe_download_nodes(self, sha256):
-        pass
+    def maybe_download_nodes(self, peer, sha256):
+        lastlevel = self.merkles[sha256].levels
+        stepsize = 5 # fixme: based on MTU and account for shorthashes
+        levels = []
+        # We want to avoid downloading a ton of 1-generation runs at the 10th level,
+        # so we start at the last level and jump stepsize generations back. That ensures that
+        # any short runs we have to download occur at levels with fewer elements
+        level = lastlevel
+        while level - stepsize > stepsize:
+            levels.append(level)
+            level -= stepsize
+        if level > stepsize:
+            levels.append(level)
+            level = stepsize
+            levels.append(level)
+        levels.append(0)
+        levels.reverse()
+        #print levels
 
-    def send_txcount_proof(self, peer, sha256):
-        pass
-    def recv_txcount_proof(self, data, peer):
-        s = StringIO.StringIO(data.split(BTMessage.MSG_LENGTH_PROOF)[1])
-        raise NotImplementedError
+        mebmp = self.merkles[sha256].state.tobitmap(levels, txlev=lastlevel)
+        prbmp = peer.inflight[sha256].state.tobitmap(levels, txlev=lastlevel)
+        need, req, pipe = self.merkles[sha256].state.getrequestables(mebmp, prbmp)
+        #print need
+        #print req
+        #print pipe
+        #n1b = nodes[1].merkles[blk.sha256].state.tobitmap([0, 5, 6, nodes[1].merkles[blk.sha256].levels], txlev=nodes[1].merkles[blk.sha256].levels)
+        #n0b = nodes[0].merkles[blk.sha256].state.tobitmap([0, 5, 6, nodes[0].merkles[blk.sha256].levels], txlev=nodes[0].merkles[blk.sha256].levels)
+
+        #need, req, pipe = nodes[1].merkles[blk.sha256].state.getrequestables(n1b, n0b)
+        #levels = req.keys()
+        #levels.append(nodes[1].merkles[blk.sha256].levels)
+        #levels.sort()
+        #for l, nxt in zip(levels[:-1], levels[1:]):
+        #    for i in range(len(req[l])):
+        #        if req[l][i]:
+        #            nodes[1].send_node_request(nodes[1].peers.values()[0], blk.sha256, l, i, nxt-l)
+        #            requests += 1
+
+

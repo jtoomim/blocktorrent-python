@@ -446,7 +446,7 @@ class BTMerkleTree:
         the last transaction to the merkle root.
         '''
         if not self.txcount:
-            return
+            return None, None
         # we interpret the index of the last transaction as a binary path to that tx,
         # where a 1 in the MSB means you take the right branch and a 0 the left
         path = self.txcount-1
@@ -490,7 +490,7 @@ class BTMerkleTree:
         checked = [(parent, path, level)]
 
         while level:
-            if bool(path & 1):
+            if path & 1:
                 left = revhashes.pop(0)
                 checked.insert(0, (left, path ^ 1, level))
             else:

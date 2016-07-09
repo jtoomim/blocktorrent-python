@@ -18,11 +18,7 @@
 # ser_*, deser_*: functions that handle serialization/deserialization
 
 
-import struct
-import socket
-import asyncore
-import binascii
-import time
+import struct, socket, asyncore, binascii, time
 import sys
 import random
 import cStringIO

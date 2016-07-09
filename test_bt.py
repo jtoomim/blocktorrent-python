@@ -34,6 +34,8 @@ def blockfromfile(fn):
 
 def init_nodes(num_nodes):
     ports = random.sample(range(1024, 65535), num_nodes)
+    for i in range(num_nodes):
+        print "ports[i] = ", ports[i]
     nodes = []
     for i in range(num_nodes):
         n = blocktorrent.BTUDPClient(ports[i])
@@ -88,7 +90,10 @@ def run_test(nodes):
     print "Attempting btmerkletree_tests(blk)."
     btmerkletree_tests(blk, nodes[0])
 
-    nodes[1].merkles[blk.sha256].checktxcountproof(*nodes[0].merkles[blk.sha256].maketxcountproof())
+    txcount, hashes = nodes[0].merkles[blk.sha256].maketxcountproof()
+    print "txcount=%i, len(hashes)=%i" % (txcount, len(hashes))
+    nodes[1].req_txcount_proof(nodes[1].peers.values()[0], blk.sha256)
+    #nodes[1].merkles[blk.sha256].checktxcountproof(*nodes[0].merkles[blk.sha256].maketxcountproof())
     print "nodes[0] state:", nodes[0].merkles[blk.sha256].state
     print "nodes[1] state before downloads\n", nodes[1].merkles[blk.sha256].state
     requests = 0
@@ -114,6 +119,9 @@ def run_test(nodes):
     print "total node requests: %i" % requests
     print "nodes[1] state changes: %i" % nodes[1].merkles[blk.sha256].state.changes
     print "nodes[1] run changes: %i" % nodes[1].merkles[blk.sha256].runs
+
+    print "nodes[2] state: ", nodes[2].merkles[blk.sha256].state
+    print "nodes[3] state: ", nodes[3].merkles[blk.sha256].state
     print "jobs done"
 
 def close_nodes(nodes):
