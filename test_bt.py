@@ -35,7 +35,7 @@ def blockfromfile(fn):
 def init_nodes(num_nodes):
     ports = random.sample(range(1024, 65535), num_nodes)
     for i in range(num_nodes):
-        print "ports[i] = ", ports[i]
+        print "ports[%i] = " %i, ports[i]
     nodes = []
     for i in range(num_nodes):
         n = blocktorrent.BTUDPClient(ports[i])
@@ -224,6 +224,7 @@ def btmerkletree_tests(blk, node):
     count = len(blk.vtx)
     mt.levels = int(math.ceil(math.log(count, 2)))
     mt.txcount = count
+    print "mt.levels = %i, mt.txcount = %i" % (mt.levels, mt.txcount)
     for i in range(count):
         mt.addhash(mt.levels, i, blk.vtx[i].sha256)
     print 2**mt.levels, count
@@ -232,7 +233,6 @@ def btmerkletree_tests(blk, node):
     print "Found something close to %i hashes (hackishly counted) for a block with %i transactions" % (hashcount, len(blk.vtx))
     print "Nodes still in purgatory:", mt.purgatory.keys()
     print "btmerkletree_tests took %3.6f ms" % (1000*(middle - start))
-    #print mt.purgatory
     print "mt.state: \n", mt.state
 
 

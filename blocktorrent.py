@@ -310,6 +310,7 @@ class BTUDPClient(threading.Thread):
         peer.send_message(msg)
 
     def handle_txcount_req(self, data, peer):
+        print "received proof req from", peer
         s = StringIO.StringIO(data.split(BTMessage.MSG_REQ_TXCOUNT, 1)[1])
         sha256 = util.deser_uint256(s)
         self.send_txcount_proof(peer, sha256)
@@ -318,11 +319,13 @@ class BTUDPClient(threading.Thread):
         txcount, hashes = self.merkles[sha256].maketxcountproof()
         if txcount and hashes:
             msg = BTMessage.MSG_TXCOUNT_PROOF + util.ser_uint256(sha256) + util.ser_varint(txcount) + ''.join(hashes)
+            print "sending %i byte txcount proof to %s" %(len(msg), `peer`)
             peer.send_message(msg)
         else:
             "couldn't send txcount proof to ", peer
 
     def recv_txcount_proof(self, data, peer):
+        print "received txcount proof from %s" % `peer`
         s = StringIO.StringIO(data.split(BTMessage.MSG_TXCOUNT_PROOF)[1])
         sha256 = util.deser_uint256(s)
         txcount = util.deser_varint(s)
@@ -331,7 +334,7 @@ class BTUDPClient(threading.Thread):
             hashcount += path & 1
             levels += 1
             path = path >> 1
-        print "txcount proof received: ", levels, hashcount, txcount
+        print "txcount proof received: %i, %i, %i " % (levels, hashcount, txcount)
         hashes = [s.read(32) for i in range(hashcount)]
         self.merkles[sha256].checktxcountproof(txcount, hashes)
 
@@ -404,7 +407,7 @@ class BTUDPClient(threading.Thread):
         for peer in self.peers.values():
             if not sha256 in peer.lastupdates:
                 self.send_blockstate(self.merkles[sha256].state, sha256, peer)
-                return
+                continue
             oldruns, oldms = peer.lastupdates[sha256]
             ms = (time.time() - oldms) * 1000.
             runs = float(self.merkles[sha256].runs - oldruns)

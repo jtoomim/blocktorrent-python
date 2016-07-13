@@ -1,7 +1,7 @@
 import math, binascii, random, traceback
 from hashlib import sha256
 
-import config, util
+import config, util, rwlock
 import logs as logs
 from logs import debuglog, log
 from util import to_hex
@@ -53,8 +53,9 @@ class TreeState:
         """
         self.state = [TreeState.MISSING]
         self.changes = 0 # the number of nodes added since initialization; used for deciding when to re-send to peers
+        self.rwlock = rwlock.ReadWriteLock()
 
-    def getnode(self, level, index):
+    def getnode(self, level, index, locked=False):
         """
         Gets the state of a node of the tree specified by its level and index.
         If the specified node does not exist in this tree but is described
@@ -70,6 +71,7 @@ class TreeState:
         """
         assert index < 2**level
         assert level >= 0
+        if not locked: self.rwlock.acquire_read()
 
         # Algorithm: we walk the tree until we either get to the target
         # or reach a node that speaks for all its descendants
@@ -77,19 +79,24 @@ class TreeState:
         i = index # of subtree
         L = level # of subtree
         s = self.state # the subtree
+        res = None
         while 1:
             if s[0] in [0, 2, 3] or L==0: # if this node speaks for its descendants or is the target
-                return s[0]
+                res = s[0]
+                break
             L -= 1
             s = s[1 + ((i>>L)%2)] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
+        if not locked: self.rwlock.release_read()
+        return res
 
-    def fetchsubtree(self, level, index):
+    def fetchsubtree(self, level, index, locked=False):
         """
         Fetches a subtree. Returns None if the subtree is not present.
         """
         assert index < 2**level
         assert level >= 0
+        if not locked: self.rwlock.acquire_read()
 
         # Algorithm: we walk the tree until we either get to the target
         # or reach a node that speaks for all its descendants
@@ -97,19 +104,30 @@ class TreeState:
         i = index # of working subtree
         L = level # of working subtree
         s = self.state # the subtree
+        res = None
         while 1:
             if L==0:
-                return s
+                res = s
+                break
             if s[0] in [0, 2, 3]: # if this node speaks for its descendants or is the target
-                return [s[0]]
+                res = [s[0]]
+                break
             L -= 1
             s = s[1 + ((i>>L)%2)] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
+        if not locked: self.rwlock.release_read()
+        return res
 
-    def hasdescendants(self, level, index, generations):
-        return subtreehasdescendants(self.fetchsubtree(level, index), generations)
+    def hasdescendants(self, level, index, generations, locked=False):
+        if not locked: self.rwlock.acquire_read()
+        res = subtreehasdescendants(self.fetchsubtree(level, index), generations)
+        if not locked: self.rwlock.release_read()
+        return res
 
-    def tobitmap(self, levels=[5], txlev=None):
+
+    def tobitmap(self, levels=[5], txlev=None, locked=False):
+        if not locked: self.rwlock.acquire_read()
+
         bitmaps = {n:[0]*2**n for n in levels}
         if txlev:
            bitmaps['tx'] = [0]*2**txlev
@@ -117,6 +135,7 @@ class TreeState:
 
         def filler(subtree, curlevel, index):
             val = subtree[0]
+            b =  curlevel, index, val, val in [0, 2, 3], subtree, subtree[0]
             if val in (0, 2, 3):
                 v = 1 if val else 0 # minor optimization: no need to do this calc in the inner loop
                 for l in levels:
@@ -131,10 +150,16 @@ class TreeState:
                     for i in range(index*2**(txlev-curlevel), (index+1)*2**(l-curlevel)):
                         bmp[i] = v
             else:
-                if curlevel in levels:
-                    bitmaps[curlevel][index] = 1 if val else 0
-                filler(subtree[1], curlevel+1, index*2)
-                filler(subtree[2], curlevel+1, index*2+1)
+                try:   
+                    if curlevel in levels:
+                        bitmaps[curlevel][index] = 1 if val else 0
+                    filler(subtree[1], curlevel+1, index*2)
+                    filler(subtree[2], curlevel+1, index*2+1)
+                except:
+                    traceback.print_exc()
+                    print b
+                    print curlevel, index, val, val in [0, 2, 3], subtree, subtree[0]
+                    print self.pyramid(12)
 
         filler(self.state, 0, 0)
 
@@ -143,6 +168,7 @@ class TreeState:
         #    print "level %s: %s" % (`level`, hex(int(''.join(map(str, bmp)), 2))) # fixme: omits leading zeros
         #if txlev:
         #    print "level tx: %s" % (hex(int(''.join(map(str, bitmaps['tx'])), 2))) # fixme: omits leading zeros
+        if not locked: self.rwlock.release_read()
         return bitmaps
 
     def getrequestables(self, ownbitmaps=None, peerbitmaps=None):
@@ -174,7 +200,7 @@ class TreeState:
         else:
             return needful
 
-    def setnode(self, level, index, value):
+    def setnode(self, level, index, value, locked=False):
         """
         Sets the state of a node of the tree, specified by its level, index, and
         new value. Creates and destroys nodes as needed to ensure that the TreeState
@@ -186,6 +212,7 @@ class TreeState:
         assert level >= 0
         assert level <= config.MAX_DEPTH
         assert value in (0,1,2,3)
+        if not locked: self.rwlock.acquire_write()
 
         if value == 0:
             raise NotImplementedError # clearing inventory is not supported
@@ -204,6 +231,7 @@ class TreeState:
             v = s[0]
             if v > value: # this can probably happen from out-of-order packets. Remove later.
                 debuglog('bttree', 'Debug warning: Parent is more complete than decendants %i %i' % (L, i))
+                if not locked: self.rwlock.release_write()
                 return
             elif v == value and v != 1:
                 break
@@ -222,8 +250,10 @@ class TreeState:
         if L == 0:
             v = s[0]
             if v == value:
+                if not locked: self.rwlock.release_write()
                 return # nothing to see here, move along
             if v > value: # this can probably happen from out-of-order packets. Remove later.
+                if not locked: self.rwlock.release_write()
                 return
             self.changes += 1
             if value == 1:
@@ -245,9 +275,10 @@ class TreeState:
             if left == right and (left > 1):
                 del s[:]
                 s.append(left)
+        if not locked: self.rwlock.release_write()
         return
 
-    def pyramid(self, maxlevels=9):
+    def pyramid(self, maxlevels=9, locked=False):
         def extract(sub, levs, i, pos):
             if len(levs) <= i:
                 levs.append([9]*2**i)
@@ -257,7 +288,9 @@ class TreeState:
             extract(sub[1], levs, i+1, (pos<<1)+0)
             extract(sub[2], levs, i+1, (pos<<1)+1)
         levels = [[9]]
+        if not locked: self.rwlock.acquire_read()
         extract(self.state, levels, 0, 0)
+        if not locked: self.rwlock.release_read()
         suppressed = len(levels) > maxlevels
         levels = levels[:maxlevels]
         spaces = int(2**(len(levels)))
@@ -269,7 +302,7 @@ class TreeState:
         if suppressed: lines.append("levels below %i suppressed" % maxlevels)
         return "\n".join(lines)
 
-    def serialize(self, level=0, index=0):
+    def serialize(self, level=0, index=0, locked=False):
         """
         Serializes (a subtree of) the tree.
 
@@ -286,7 +319,9 @@ class TreeState:
         in the tree is not divisible by four, then the LSBs of the last byte
         will be zero-padded.
         """
+        if not locked: self.rwlock.acquire_read()
         flat = self._flatten(self.fetchsubtree(level, index))
+        if not locked: self.rwlock.release_read() # flat is an independent data structure
         bytes, j, b = [], 0, 0
         for i in range(len(flat)):
             b = b | (flat[i] << (2*(3-j)))
@@ -317,7 +352,7 @@ class TreeState:
             res.extend(self._flatten(subtree[2]))
         return res
 
-    def deserialize(self, f):
+    def deserialize(self, f, locked=False):
         length = util.deser_varint(f)
         level = util.deser_varint(f)
         index = util.deser_varint(f)
@@ -330,7 +365,11 @@ class TreeState:
             b = data[i//4]
             flat.append((ord(b)>> (2*(3-j)) & 3))
             j = (j+1) % 4
-        self.state = self._fatten(flat)[0]
+
+        state = self._fatten(flat)[0]
+        if not locked: self.rwlock.acquire_write()
+        self.state = state
+        if not locked: self.rwlock.release_write()
 
     def _fatten(self, flat):
         v = flat[0]
@@ -367,8 +406,9 @@ class BTMerkleTree:
         self.levels = 0
         self.txcount = 0
         self.runs = 0 # number of runs added; used to help decide when to send a new state to peers
+        self.rwlock = rwlock.ReadWriteLock()
 
-    def getnode(self, level, index, subtree=False):
+    def getnode(self, level, index, subtree=False, locked=False):
         """
         Gets the hash at the specified level and index of the validated tree.
         If that node has not yet been added, None will be returned.
@@ -376,30 +416,40 @@ class BTMerkleTree:
         assert index < 2**level
         assert level >= 0
         assert level <= config.MAX_DEPTH
+        if not locked: self.rwlock.acquire_read()
         i = index # of subtree
         L = level # of subtree
         s = self.valid # the subtree
+        res = None
         while 1:
             if L==0: # this node is the target
                 if subtree:
-                    return s
+                    res = s
+                    break
                 elif not s:
-                    return None
+                    res = None
+                    break
                 else:
-                    return s[0]
+                    res = s[0]
+                    break
             elif len(s) < 3:
-                return None
+                res = None
+                break
             L -= 1
             s = s[1 + ((i>>L)%2)] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
+        if not locked: self.rwlock.release_read()
+        return res
 
-    def getrun(self, level, index, generations):
+
+    def getrun(self, level, index, generations, locked=False):
         """
         Returns a list of hashes that are n generations descended from a node in the tree.
         For efficiency, this method assumes that you've already ensured that those
         nodes are present.
         """
-        subtree = self.getnode(level, index, subtree=True)
+        if not locked: self.rwlock.acquire_read()
+        subtree = self.getnode(level, index, subtree=True, locked=locked)
         def helper(sub, gen):
             if not sub:
                 return []
@@ -407,10 +457,13 @@ class BTMerkleTree:
                 return [sub[0]]
             else:
                 return helper(sub[1], gen-1) + helper(sub[2], gen-1)
-        return helper(subtree, generations)
+        res = helper(subtree, generations)
+        if not locked: self.rwlock.release_read()
+        return res
 
     def checkaddrun(self, level, index, generations, length, run):
-        root = self.getnode(level, index)
+        self.rwlock.acquire_read()
+        root = self.getnode(level, index, locked=True)
         curlevel = runlevel = level + generations
         parents = []
         hashes = run[:]
@@ -430,23 +483,32 @@ class BTMerkleTree:
             curlength = len(hashes)
 
         assert len(hashes) == 1
-        if not hashes[0] == root:
+        if not hashes[0] == root: # not a valid run, nothing more to do here
+            self.rwlock.release_read()
             return False
 
+        # run is valid, so let's switch our lock to write mode. To avoid deadlocks,
+        # we need to release the read first and let other threads waiting to write 
+        # to complete their writes. There shouldn't be any possible writes that would
+        # make the adding of this run invalid.
+        self.rwlock.release_read()
+        self.rwlock.acquire_write()
         self.runs += 1
         subtreelevels.reverse()
         for l in range(len(subtreelevels)):
             curlevel = level + l
             for i in range(len(subtreelevels[l])):
-                self.setnode(curlevel, index*2**l+i, subtreelevels[l][i])
+                self.setnode(curlevel, index*2**l+i, subtreelevels[l][i], locked=True)
+        self.rwlock.release_write()
         return True
 
-    def maketxcountproof(self):
+    def maketxcountproof(self, locked=False):
         '''Prove the number of transactions in a block by returning all of the hashes needed to connect
         the last transaction to the merkle root.
         '''
         if not self.txcount:
             return None, None
+        if not locked: self.rwlock.acquire_read()
         # we interpret the index of the last transaction as a binary path to that tx,
         # where a 1 in the MSB means you take the right branch and a 0 the left
         path = self.txcount-1
@@ -469,10 +531,10 @@ class BTMerkleTree:
                 subtree = subtree[1]
                 if levels == 0: hashes.append(subtree[0])
             path = path & (2**levels-1)
-        # and finally, the final tx itself
+        if not locked: self.rwlock.release_read()
         return self.txcount, hashes
 
-    def checktxcountproof(self, txcount, hashes):
+    def checktxcountproof(self, txcount, hashes, locked=False):
         '''Verify a txcount proof by going from the leaf to the root and calculating the hashes.'''
 
         # Count how many levels we have to descend. We know the first step in the path is right,
@@ -503,24 +565,28 @@ class BTMerkleTree:
 
         if parent == self.valid[0]:
             print "Successfully verified txcount == %i" % txcount
+            if not locked: self.rwlock.acquire_write()
             self.txcount = txcount
             self.levels = int(math.ceil(math.log(txcount, 2)))
             for hsh, path, level in checked:
-                self.addhash(level, path, hsh)
+                self.addhash(level, path, hsh, locked=True)
+            if not locked: self.rwlock.release_write()
         else:
             print "Unsuccessful txcount verification"
 
-    def upgradestate(self, level, index, edge=False):
+    def upgradestate(self, level, index, edge=False, locked=False):
         # fixme: do we have the tx itself?
         # fixme: is this the right edge?
+        if not locked: self.rwlock.acquire_write()
         if ((self.levels and (level == self.levels)) or 
             (edge and ((index & 1) == 1))):
             newstate = 2
         else:
             newstate = 1
-        self.state.setnode(level, index, newstate)
+        self.state.setnode(level, index, newstate, locked=True)
+        if not locked: self.rwlock.release_write()
 
-    def setnode(self, level, index, hash, edge=False):
+    def setnode(self, level, index, hash, edge=False, locked=False):
         """
         Sets the hash at the specified level and index of the validated tree.
         The parent hash must have already been added.
@@ -528,6 +594,7 @@ class BTMerkleTree:
         assert index < 2**level
         assert level >= 0
         assert level <= config.MAX_DEPTH
+        if not locked: self.rwlock.acquire_write()
 
         #statecode = 3 if hash in mempool else 2 if level == self.levels else 1
         statecode = 2 if level == self.levels else 1
@@ -538,17 +605,18 @@ class BTMerkleTree:
         while 1:
             if L==0: # this node is the target
                 s.extend([hash, [], []])
-                self.upgradestate(level, index, edge)
-                return
+                self.upgradestate(level, index, edge, locked=True)
+                break
             elif len(s) < 3:
                 debuglog('bttree', 'setnode(%i, %i, hash) found undersized element at %i, %i: %s' % (level, index, L, i, `s`))
                 raise
             L -= 1
             s = s[1 + ((i>>L)%2)] # take the left or right subtree
             i = i % (1<<L) # we just took that step; clear the bit for sanity's sake
+        if not locked: self.rwlock.release_write()
 
 
-    def addhash(self, level, index, hash, peer=None):
+    def addhash(self, level, index, hash, peer=None, locked=False):
         """
         Adds a hash to either the validated tree (when possible) or to the
         unvalidated cache, self.purgatory. This will also add any computed parent
@@ -559,9 +627,12 @@ class BTMerkleTree:
         """
         if type(hash) == long:
             hash = util.ser_uint256(hash)
+
         key = (level, index)
+        if not locked: self.rwlock.acquire_write() # this might benefit from more fine-grained locks when the switch is made to C++
         if key in self.purgatory:
             if self.purgatory[key] == hash:
+                if not locked: self.rwlock.release_write()
                 return
             else:
                 oldpeer = self.peerorigins[self.purgatory[key]] if self.purgatory[key] in self.peerorigins else None
@@ -571,14 +642,14 @@ class BTMerkleTree:
                 debuglog('btnet', 'Hash added is (%i, %i): %s. Oldhash: %s.' % (level, index, to_hex(hash), to_hex(self.purgatory[key])))
                 # fixme: peer banning
                 # continue to add the new hash and validate
-        elif self.getnode(level, index):
+        elif self.getnode(level, index, locked=True):
             debuglog('bttree', 'Debug warning: level=%i index=%i already validated in tree' % (level, index))
+            if not locked: self.rwlock.release_write()
             return
         self.purgatory[key] = hash
         #self.peerorigins[hash] = peer # fixme: make sure memory growth is bounded
 
-        parent = self.getnode(level-1, index//2) # is our parent already valid?
-        #if parent: print "valid parent of %i,%i is %i,%i:" %(level, index, level-1, index//2), to_hex(parent])
+        parent = self.getnode(level-1, index//2, locked=True) # is our parent already valid?
         siblingkey = (level, index ^ 1)
 
         if not siblingkey in self.purgatory: # Is this is the right edge of the tree?
@@ -603,20 +674,20 @@ class BTMerkleTree:
                 debuglog('btnet', 'Found a bad edge: (%i, %i) = %s not %s' % (level-1, index//2, to_hex(parent), to_hex(parenthash)))
                 result = 'orphan' # incorrect tx count hint
             else: # recurse one level up
-                result = self.addhash(level-1, index//2, parenthash, None)
+                result = self.addhash(level-1, index//2, parenthash, None, locked=True)
         else:
             result = 'orphan'
 
         if result == 'connected':
-            self.setnode(level, index, hash, edge=(hash==sib))
-            self.setnode(level, index^1, sib, edge=(hash==sib))
+            self.setnode(level, index,  hash, edge=(hash==sib), locked=True)
+            self.setnode(level, index^1, sib, edge=(hash==sib), locked=True)
             del self.purgatory[key]
             del self.purgatory[siblingkey]
             if hash == sib and level == self.levels: # right edge, bottom row
                 self.txcount = index|1 # left sib is the last tx, but we start counting from 0, so we want the right sib's index
             # the recursive caller of addhash will take care of the children of key, but not siblingkey
             if hash != sib:
-                self.checkchildren(siblingkey[0], siblingkey[1])
+                self.checkchildren(siblingkey[0], siblingkey[1], locked=True)
         elif result == 'invalid':
             if sib == hash: # invalid hint about the number of transactions
                 debuglog('btnet', 'Invalid txcount? -- %i ' % self.txcount)
@@ -631,16 +702,18 @@ class BTMerkleTree:
                     #del self.purgatory[k]
         elif result == 'orphan':
             pass # fixme: deal with peer info (and banning) in each of these branches above
+        if not locked: self.rwlock.release_write()
         return result
 
-    def checkchildren(self, level, index):
+    def checkchildren(self, level, index, locked=False):
         """
         Recursively checks the descendants of a node to see if they can be
         validated.
         """
         # fixme: there's a lot of duplicate code between this and addhash
+        if not locked: self.rwlock.acquire_write()
         key = (level, index)
-        hash = self.getnode(level, index)
+        hash = self.getnode(level, index, locked=True)
         assert hash
         assert not key in self.purgatory
         c1k, c2k = ((level+1, index*2), (level+1, index*2+1)) # child 1/2 key
@@ -664,6 +737,7 @@ class BTMerkleTree:
                     # This can occur if intermediate hashes have been added
                     # via. addhash(), and not all descendants of that
                     # intermediate hash have been added.
+                    if not locked: self.rwlock.release_write()
                     return
 
         if self.calcparent(hashes[1], hashes[2]) == hashes[0]:
@@ -671,12 +745,14 @@ class BTMerkleTree:
                 self.txcount = index|1 # left sib is the last tx, but we start counting from 0, so we want the right sib's index
             is_edge = hashes[1]==hashes[2]
             for i in range(1,3):
-                self.setnode(keys[i][0], keys[i][1], hashes[i], edge=is_edge)
+                self.setnode(keys[i][0], keys[i][1], hashes[i], edge=is_edge, locked=True)
                 del self.purgatory[keys[i]]
                 if not is_edge or i < 3:
-                    self.checkchildren(keys[i][0], keys[i][1])
+                    self.checkchildren(keys[i][0], keys[i][1], locked=True)
         else:
             debuglog('bttree', "Invalid descendants encountered in checkchildren. This should not happen. Keys: ", keys)
+        if not locked: self.rwlock.release_write()
+
 
     def calcparent(self, hash1, hash2):
         if type(hash1) == long:

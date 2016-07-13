@@ -19,4 +19,4 @@ UPDATE_PEERS_EVERY_N_RUNS = 5 # send peers an updated state immediately if our l
 
 MAX_UPLOAD_BANDWIDTH = 95.0    # Maximum allowed upstream bandwidth that blocktorrent may use, in Mbps.
 MAX_DOWNLOAD_BANDWIDTH = 95.0  # Maximum allowed downstream bandwidth that blocktorrent may target, in Mbps.
-LEAKY_BUCKET_BUFFER_SISE = 50 # Allow this many kB of data to be queued 
+LEAKY_BUCKET_BUFFER_SISE = 50  # Allow this many kB of data to be queued in OS or router buffers
